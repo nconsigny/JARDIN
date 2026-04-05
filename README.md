@@ -1,4 +1,4 @@
-# SPHINCs- — Post-Quantum ERC-4337 Smart Account
+# SPHINCs- — Post-Quantum Ethereum Accounts
 
 ---
 
@@ -12,21 +12,25 @@
 
 ---
 
-A hybrid **ECDSA + SPHINCS+** ERC-4337 smart account for Ethereum, implementing post-quantum signature verification on-chain using hand-optimised Yul/assembly verifiers.
+Post-quantum signature verification on Ethereum using hash-based signatures (SPHINCS+ variants). Supports ERC-4337 hybrid accounts (ECDSA + SPHINCS+) and native EIP-8141 frame transaction accounts (pure PQ).
 
 ## Architecture
 
+### ERC-4337 Hybrid Account
 ```
-EOA (ECDSA key)
+BIP-39 mnemonic (12/24 words)
+    │
+    ▼  BIP-44: m/44'/60'/0'/0/0
+ECDSA private key
     │
     ├── signs UserOp (classical, secp256k1)
     │
-    └── derives SPHINCS+ keypair (off-chain, Python)
+    └── derives SPHINCS+ keypair (keccak256 chain)
             │
-            ├── pkSeed + pkRoot → stored in SphincsWc*Asm verifier (on-chain)
-            └── sk_seed         → never stored, rederived per signing session
+            ├── pkSeed + pkRoot → stored in verifier contract (on-chain)
+            └── sk_seed         → never stored, rederived per session
 
-UserOp signature = abi.encode(ecdsaSig[65], sphincsSig[3740–4296])
+UserOp signature = abi.encode(ecdsaSig[65], sphincsSig[3352])
 
 EntryPoint.handleOps()
     └── SphincsAccount._validateSignature()
@@ -34,110 +38,161 @@ EntryPoint.handleOps()
             └── verifier.staticcall(verify(userOpHash, sphincsSig)) == true
 ```
 
-Both signatures must be valid. Compromising ECDSA alone is not enough — a quantum attacker would also need to forge SPHINCS+.
+### EIP-8141 Frame Transaction Account (Pure PQ)
+```
+Frame Transaction (type 0x06)
+    ├── Frame 0 (VERIFY): SPHINCS+ C6 verification → APPROVE
+    └── Frame 1 (SENDER): ETH transfer / contract call
+```
+No ECDSA required — the account validates with SPHINCS+ only via the APPROVE opcode.
 
 ## Variants
 
-| Variant | Scheme | Sig size | ASM verify gas | Security |
-|---|---|---|---|---|
-| C2 | FORS+C h=18 d=2 | 4264 bytes | ~190K | 128-bit |
-| C3 | PORS+FP h=27 d=3 | 3596 bytes | ~260K | 128-bit |
-| C5 | PORS+FP h=20 d=2 w=32 | 2888 bytes | ~233K | 128-bit |
-| C6 | FORS+C h=24 d=2 a=16 k=8 | 3352 bytes | ~156K | 128-bit @ 2^20 sigs |
+| Variant | Scheme | Sig size | Verify gas | 4337 total | Security |
+|---|---|---|---|---|---|
+| C2 | FORS+C h=18 d=2 | 4040 bytes | 193K | 412K | 128-bit |
+| C3 | PORS+FP h=27 d=3 | 4188 bytes | 261K | 444K | 128-bit |
+| C5 | PORS+FP h=20 d=2 w=32 | 2888 bytes | 233K | 404K | 128-bit |
+| **C6** | **FORS+C h=24 d=2 a=16 k=8** | **3352 bytes** | **156K** | **335K** | **128-bit @ 2^20 sigs** |
 
-Full ERC-4337 transaction cost (including calldata, EntryPoint overhead, ECDSA, execute): ~412K (C2) / ~444K (C3) / ~404K (C5) / **~335K (C6)**.
+C6 is the gas-optimal candidate, found via calibrated EVM cost model (see `SPHINCS-Parameters/`).
 
 ## Key Derivation
 
-SPHINCS+ keys are derived **entirely off-chain** from the ECDSA private key. The contract only stores the public key (`pkSeed`, `pkRoot`) — it never sees any private key material.
+### BIP-39/44 Path (Rust WASM signer)
+
+The Rust signer (`signer-wasm/`) derives SPHINCS+ keys from a standard BIP-39 mnemonic:
 
 ```
-ECDSA private key
+BIP-39 mnemonic (12 or 24 words)
     │
-    ▼  keccak256("sphincs_keygen" || ecdsa_key || variant)
-keygen_message
+    ▼  PBKDF2 → 512-bit seed
     │
-    ▼  keccak256("sphincs_signer_v1" || keygen_message)
+    ▼  BIP-32 derivation at m/44'/60'/0'/0/0
+    │
+ECDSA private key (32 bytes)
+    │
+    ▼  keccak256("sphincs_signer_v1" || keccak256(key))
 entropy
-    ├──▶ keccak256("pk_seed" || entropy) → pkSeed  (public, on-chain)
-    └──▶ keccak256("sk_seed" || entropy) → sk_seed (secret, never stored)
-                                                │
-                                                ▼
-                                          hypertree build → pkRoot (public, on-chain)
+    ├──▶ keccak256("pk_seed" || entropy) & N_MASK → pkSeed  (public, on-chain)
+    └──▶ keccak256("sk_seed" || entropy)          → sk_seed (secret, never stored)
+                                                        │
+                                                        ▼
+                                                  hypertree build → pkRoot (public, on-chain)
 ```
 
-### Comparison with BIP32 HD wallets
+Users can use their existing 12/24 word seed phrase. The SPHINCS+ keypair is deterministically derived from the same mnemonic as their Ethereum account.
 
-| Property | BIP32 HD wallet | This scheme |
-|---|---|---|
-| Master secret | BIP39 mnemonic → 512-bit seed | ECDSA private key (32 bytes) |
-| Derivation | HMAC-SHA512, hardened paths | keccak256 chain with domain tags |
-| Key separation | Cryptographic path isolation | Domain-separated prefixes |
-| Standard | BIP32/BIP44 | Ad-hoc |
-| Parent compromise | Exposes non-hardened children only | Exposes SPHINCS+ key |
+### Legacy Path (Python signer)
 
-**Limitation:** if the ECDSA private key is compromised, the SPHINCS+ key is also compromised since it is derived from it. For production use, the SPHINCS+ secret should be derived directly from a BIP32 master seed at a dedicated hardened path (e.g. `m/purpose'/variant'`), keeping it independent from the ECDSA signing key.
+The Python signer derives directly from an ECDSA private key + variant tag, without BIP-39.
 
-## Deployed Contracts (Sepolia)
+## Signers
+
+| Signer | Language | Platform | C6 Sign Time | BIP-39 |
+|---|---|---|---|---|
+| `script/signer.py` | Python | CLI | ~30s | No (private key only) |
+| `signer-wasm/` | Rust | Native + WASM | ~3s native, ~6-15s browser | **Yes** |
+
+The Rust signer produces byte-identical output to the Python signer (8/8 cross-validation tests passing).
+
+```bash
+# Build WASM signer
+cd signer-wasm && wasm-pack build --release --target web
+
+# Run tests (including full signing roundtrip)
+cargo test --release -- --ignored
+```
+
+## Formal Verification (Lean 4 / Verity)
+
+The `verity/` directory contains a Lean 4 formal model of the C6 verifier, compilable via the [Verity](https://github.com/Th0rgal/verity) framework.
+
+```
+verity/
+├── SphincsC6/           ← Lean 4 functional model (zero sorry, 14 theorems)
+│   ├── Types.lean       ← C6 parameters, sig types
+│   ├── Hash.lean        ← Keccak primitives + collision resistance axioms
+│   ├── WotsC.lean       ← WOTS+C w=16 verification
+│   ├── ForsC.lean       ← FORS+C forced-zero last tree
+│   ├── Hypertree.lean   ← D=2 layers, subtree_h=12
+│   ├── Contract.lean    ← Verity Contract monad + oracle model
+│   └── Spec.lean        ← Proven: param consistency, sig size, soundness
+├── external-libs/       ← SphincsC6Verify.yul (full verification oracle)
+└── artifacts/           ← Verity-compiled SphincsC6Verifier.yul
+```
+
+The Verity compiler generates a complete Yul contract from the Lean model:
+```bash
+lake exe verity-compiler --module Contracts.SphincsC6.SphincsC6 \
+  --link examples/external-libs/SphincsC6Verify.yul -o artifacts/yul
+```
+
+Both the hand-optimized and Verity-compiled versions are deployed on Sepolia and verify the same signatures.
+
+## Deployed Contracts
+
+### Sepolia (ERC-4337 Hybrid)
 
 | Contract | Address |
 |---|---|
-| SphincsAccountFactory | `0xcde095f18801e6623Fb9fb7246d6b08f24aDbbC6` |
+| Factory (C2-C6) | [`0x795C1386...`](https://sepolia.etherscan.io/address/0x795C138673E934c3809477d2507fBF86985f8c2F) |
+| C6 Account | [`0x79169...`](https://sepolia.etherscan.io/address/0x7916968db92A3fbaFBb13b61B60C940811689337) |
+| C6 Verifier (ASM) | [`0xc8aa8...`](https://sepolia.etherscan.io/address/0xc8aa83f6419f95bd8728ee9df225e93c6694da6b) |
+| C6 Verifier (Verity) | [`0x77bE5...`](https://sepolia.etherscan.io/address/0x77bE5c7E9196599478eC79fB815AcB21eb00Fd12) |
 | EntryPoint v0.9 | `0x433709009B8330FDa32311DF1C2AFA402eD8D009` |
+
+### ethrex Testnet (EIP-8141 Frame Tx — Pure PQ)
+
+| Contract | Address |
+|---|---|
+| C6 Verifier | `0x7969c5eD335650692Bc04293B07F5BF2e7A673C0` |
+| Frame Account | `0xFD471836031dc5108809D173A067e8486B9047A3` |
+
+Chain ID: 1729. Frame tx block 534292 — both VERIFY and SENDER frames succeeded.
 
 ## Setup
 
 ```bash
-# Install Foundry dependencies
+# Solidity
 forge build
 
-# Python dependencies
-python3 -m venv .venv && source .venv/bin/activate
+# Python signer
 pip install eth-account eth-abi requests pycryptodome
+
+# Rust WASM signer
+cd signer-wasm && cargo build --release
 ```
 
-## Environment
-
-Create `.env` in the project root:
+## Usage
 
 ```bash
-PRIVATE_KEY=0x<funded_sepolia_eoa_private_key>
-PIMLICO_API_KEY=<pimlico_api_key>          # optional, not required for direct handleOps
-SEPOLIA_RPC_URL=https://rpc.ankr.com/eth_sepolia/<key>
-```
-
-## Deploy
-
-```bash
-forge script script/DeploySepolia.s.sol --rpc-url sepolia --broadcast
-```
-
-## Create Account
-
-```bash
-# Generates SPHINCS+ keypair (~10s), prints counterfactual address + cast send command
+# Create hybrid account (ERC-4337)
 python3 script/send_userop.py create \
-  --factory <factory_address> \
-  --ecdsa-key $PRIVATE_KEY \
-  --variant c2   # or c3 / c4
-```
+  --factory 0x795C138673E934c3809477d2507fBF86985f8c2F \
+  --ecdsa-key $PRIVATE_KEY --variant c6
 
-Then run the printed `cast send` command to deploy the account on-chain, and fund it with Sepolia ETH.
-
-## Send UserOp
-
-```bash
+# Send hybrid UserOp
 python3 script/send_userop.py send \
-  --account <account_address> \
-  --ecdsa-key $PRIVATE_KEY \
-  --to <recipient> \
-  --value 0.001 \
-  --variant c2   # or c3 / c4
+  --account <account> --ecdsa-key $PRIVATE_KEY \
+  --to <recipient> --value 0.001 --variant c6
+
+# Send EIP-8141 frame tx (pure PQ, ethrex testnet)
+python3 script/frame_tx.py send \
+  --account <frame_account> --to <recipient> --value 0.001
 ```
 
 ## Tests
 
 ```bash
-forge test                          # all 23 tests
-forge test --match-contract AsmBenchmark -vv   # gas benchmarks
+forge test                                    # all tests
+forge test --match-contract C6Differential    # C6 cross-validation
+cd signer-wasm && cargo test --release -- --ignored  # Rust signer roundtrip
 ```
+
+## References
+
+- [ePrint 2025/2203](https://eprint.iacr.org/2025/2203) — Blockstream SPHINCS+ parameter optimization (WOTS+C, FORS+C)
+- [SPHINCS-Parameters](https://github.com/nconsigny/SPHINCS-Parameters) — EVM-adapted parameter search with calibrated gas model
+- [EIP-8141](https://eips.ethereum.org/EIPS/eip-8141) — Frame transactions (native account abstraction)
+- [Verity](https://github.com/Th0rgal/verity) — Lean 4 → EVM formally verified smart contracts
