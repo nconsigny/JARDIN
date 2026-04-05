@@ -139,19 +139,20 @@ All three compile to Yul, deploy on Sepolia, and verify the same signatures:
 | C6 Verifier (ASM) | [`0xc8aa8...`](https://sepolia.etherscan.io/address/0xc8aa83f6419f95bd8728ee9df225e93c6694da6b) |
 | C6 Verifier (Verity, CompilationModel) | [`0xddd28...`](https://sepolia.etherscan.io/address/0xddd28faE24f10B029F55dc674d1c6105AFfBe1C8) |
 | C6 Verifier (Verity, `verity_contract`) | [`0x1Cb55...`](https://sepolia.etherscan.io/address/0x1Cb55Ab57DA464A9A90DEC6b1560EdBE5004E069) |
+| C6 Account (Verity macro verifier) | [`0x54C76...`](https://sepolia.etherscan.io/address/0x54C76035CBFE593aB0a8027fA22A7E153E72ca4e) |
 | EntryPoint v0.9 | `0x433709009B8330FDa32311DF1C2AFA402eD8D009` |
 
 **Transactions:**
 
 | Description | Gas | Tx |
 |---|---|---|
-| C6 hybrid UserOp (ECDSA + SPHINCS+) | 335,021 | [`0x8ffc857b...`](https://sepolia.etherscan.io/tx/0x8ffc857b5858175e9bcf7f1121653eef320e6b13f7a89b20f59d09f7bec189d1) |
+| C6 hybrid UserOp — ASM verifier | 335,021 | [`0x8ffc857b...`](https://sepolia.etherscan.io/tx/0x8ffc857b5858175e9bcf7f1121653eef320e6b13f7a89b20f59d09f7bec189d1) |
+| C6 hybrid UserOp — `verity_contract` verifier | 383,378 | [`0xd9957b39...`](https://sepolia.etherscan.io/tx/0xd9957b395c229c9975d403e93b585f5c512dfa9769ae0d9d7bf1d680474555d3) |
 | C6 EOA verify — hand-optimized ASM | 231,350 | [`0xf91c864f...`](https://sepolia.etherscan.io/tx/0xf91c864f1e51fbc65d1a25815304632b2c10feba8b12c1ca2e6562dbfb2423a3) |
-| C6 EOA verify — Verity-compiled (full) | 254,971 | [`0xddd28f...`](https://sepolia.etherscan.io/address/0xddd28faE24f10B029F55dc674d1c6105AFfBe1C8) |
 | C2 hybrid UserOp | 412,126 | See `trace_c2_summary.txt` |
 | C5 hybrid UserOp | 403,636 | See `trace_c5_summary.txt` |
 
-**Gas breakdown note:** The EOA verify calls (231K / 255K) include the 21K base transaction cost and ~54K calldata cost for the 3352-byte signature. The pure SPHINCS+ compute cost is **~156K gas** — visible in the C6 hybrid UserOp trace as the inner `verifier.staticcall()`, where calldata is already paid by the outer transaction.
+**Gas breakdown:** The 4337 UserOp gas includes base tx cost (21K), calldata (~54K for 3352-byte sig), EntryPoint overhead (~80K), ECDSA verification (~3K), and SPHINCS+ verify. The pure SPHINCS+ compute cost is **~156K gas** (ASM) / **~205K gas** (`verity_contract`), visible as the inner `verifier.staticcall()` in the trace. The 14% 4337 overhead (383K vs 335K) is the cost of full Layer 1 formal verification through Verity.
 
 ### ethrex Testnet (EIP-8141 Frame Tx — Pure PQ)
 
