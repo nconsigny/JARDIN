@@ -98,34 +98,6 @@ cd signer-wasm && wasm-pack build --release --target web
 cargo test --release -- --ignored
 ```
 
-## Formal Verification (Lean 4 / Verity)
-
-The `verity/` directory contains a Lean 4 formal model and a Verity CompilationModel of the C6 verifier. The [Verity](https://github.com/Th0rgal/verity) compiler generates the **entire verification pipeline** — H_msg, FORS+C, hypertree, WOTS chains — directly from the Lean model. No opaque oracle; every keccak hash chain is traceable to the EDSL source.
-
-Three levels of formal verification, each with increasing trust guarantees:
-
-**1. Lean functional model** (`verity/SphincsC6/`) — 3 axioms, 20 theorems, 0 sorry:
-- Proves WOTS chain roundtrip, digit sum invariant, FORS forced-zero, Merkle/FORS/chain binding
-- All axioms are irreducible keccak256 cryptographic assumptions
-
-**2. Manual CompilationModel** (`verity/SphincsC6Full/`) — compiled by Verity to Yul:
-- Full verification pipeline in `Stmt`/`Expr` DSL, no oracle
-- Spec.lean, Invariants.lean, Proofs/Basic.lean (Verity pattern)
-- Compiled: `lake exe verity-compiler --module Contracts.SphincsC6Full`
-
-**3. `verity_contract` macro** — full Layer 1 typed-IR proofs:
-- Uses memory-as-state pattern for loop-carried variables (mstore/mload at fixed scratch slots)
-- Gets automatic typed-IR compilation correctness from Verity's generic theorem
-- Compiled: `lake exe verity-compiler --module Contracts.SphincsC6V.SphincsC6V`
-
-All three compile to Yul, deploy on Sepolia, and verify the same signatures:
-
-| Version | Gas (EOA) | Bytecode | Formal guarantee |
-|---|---|---|---|
-| Hand-optimized ASM | 234K | 1175 bytes | Differential testing only |
-| Manual CompilationModel | 255K | 1225 bytes | Verity Layer 2-3 proofs |
-| **`verity_contract` macro** | **283K** | **1403 bytes** | **Verity Layer 1-2-3 proofs** |
-
 ## Deployed Contracts & Transactions
 
 ### Sepolia (ERC-4337 Hybrid)
@@ -143,7 +115,6 @@ All three compile to Yul, deploy on Sepolia, and verify the same signatures:
 
 | Description | Gas | Tx |
 |---|---|---|
-| C6 hybrid UserOp — ASM (send to 0xdead) | 334,750 | [`0x74f8be55...`](https://sepolia.etherscan.io/tx/0x74f8be55dceea67a4ef0e3a26aeb47528eae736c089ee9a159ca51faaf390f27) |
 | C6 hybrid UserOp — ASM (real ETH transfer) | 300,826 | [`0xe63296bf...`](https://sepolia.etherscan.io/tx/0xe63296bfe277433dcb28a9bbb03eec25d2ef860041338e270225eb1d6fa7ca68) |
 | C6 hybrid UserOp — `verity_contract` | 383,396 | [`0xd63462d0...`](https://sepolia.etherscan.io/tx/0xd63462d0e78342181a0bf884c1ae0dc60e8b6cf0df278f21724903bba83bc38d) |
 
@@ -162,7 +133,7 @@ All three compile to Yul, deploy on Sepolia, and verify the same signatures:
 |---|---|---|
 | Frame tx — SPHINCS+ C6 pure PQ (block 586490) | 229,776 | [`0x36200cda...`](https://demo.eip-8141.ethrex.xyz:8082/tx/0x36200cdab09b0147811e22493cf2ba50e9467d365b2f2a77562629f11c18acb0) |
 
-Chain ID: 1729. Both VERIFY (159K gas) and SENDER frames succeeded — no ECDSA, pure post-quantum. The frame tx gas (230K) is lower than the 4337 hybrid (335K) because there is no EntryPoint overhead or ECDSA verification.
+Chain ID: 1729. Both VERIFY (159K gas) and SENDER frames succeeded — no ECDSA, pure post-quantum. The frame tx gas (230K) is lower than the 4337 hybrid (301K) because there is no EntryPoint overhead or ECDSA verification.
 
 ## Setup
 
@@ -182,7 +153,7 @@ cd signer-wasm && cargo build --release
 ```bash
 # Create hybrid account (ERC-4337)
 python3 script/send_userop.py create \
-  --factory 0x795C138673E934c3809477d2507fBF86985f8c2F \
+  --factory 0x6c523b4FC4DBDB57067a516ad1186329d6ba0D5e \
   --ecdsa-key $PRIVATE_KEY --variant c6
 
 # Send hybrid UserOp
@@ -202,6 +173,34 @@ forge test                                    # all tests
 forge test --match-contract C6Differential    # C6 cross-validation
 cd signer-wasm && cargo test --release -- --ignored  # Rust signer roundtrip
 ```
+
+## Formal Verification (Lean 4 / Verity)
+
+The `verity/` directory contains a Lean 4 formal model and a Verity CompilationModel of the C6 verifier. The [Verity](https://github.com/Th0rgal/verity) compiler generates the **entire verification pipeline** — H_msg, FORS+C, hypertree, WOTS chains — directly from the Lean model. No opaque oracle; every keccak hash chain is traceable to the EDSL source.
+
+Three levels of formal verification, each with increasing trust guarantees:
+
+**1. Lean functional model** (`verity/SphincsC6/`) — 3 axioms, 20 theorems, 0 sorry:
+- Proves WOTS chain roundtrip, digit sum invariant, FORS forced-zero, Merkle/FORS/chain binding
+- All axioms are irreducible keccak256 cryptographic assumptions
+
+**2. Manual CompilationModel** (`verity/SphincsC6Full/`) — compiled by Verity to Yul:
+- Full verification pipeline in `Stmt`/`Expr` DSL, no oracle
+- Spec.lean, Invariants.lean, Proofs/Basic.lean (Verity pattern)
+- Compiled: `lake exe verity-compiler --module Contracts.SphincsC6Full`
+
+**3. `verity_contract` macro** (`verity/SphincsC6V/`) — full Layer 1 typed-IR proofs:
+- Uses memory-as-state pattern for loop-carried variables (mstore/mload at fixed scratch slots)
+- Gets automatic typed-IR compilation correctness from Verity's generic theorem
+- Compiled: `lake exe verity-compiler --module Contracts.SphincsC6V.SphincsC6V`
+
+All three compile to Yul, deploy on Sepolia, and verify the same signatures:
+
+| Version | Gas (EOA) | Bytecode | Formal guarantee |
+|---|---|---|---|
+| Hand-optimized ASM | 234K | 1175 bytes | Differential testing only |
+| Manual CompilationModel | 255K | 1225 bytes | Verity Layer 2-3 proofs |
+| **`verity_contract` macro** | **283K** | **1403 bytes** | **Verity Layer 1-2-3 proofs** |
 
 ## References
 
