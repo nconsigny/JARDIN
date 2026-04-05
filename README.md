@@ -104,27 +104,29 @@ cargo test --release -- --ignored
 
 The `verity/` directory contains a Lean 4 formal model and a Verity CompilationModel of the C6 verifier. The [Verity](https://github.com/Th0rgal/verity) compiler generates the **entire verification pipeline** — H_msg, FORS+C, hypertree, WOTS chains — directly from the Lean model. No opaque oracle; every keccak hash chain is traceable to the EDSL source.
 
-```
-verity/
-├── SphincsC6/           ← Lean 4 functional model (zero sorry, 14 theorems)
-│   ├── Types.lean       ← C6 parameters, sig types
-│   ├── Hash.lean        ← Keccak primitives + collision resistance axioms
-│   ├── WotsC.lean       ← WOTS+C w=16 verification
-│   ├── ForsC.lean       ← FORS+C forced-zero last tree
-│   ├── Hypertree.lean   ← D=2 layers, subtree_h=12
-│   ├── Contract.lean    ← Verity Contract monad + security properties
-│   └── Spec.lean        ← Proven: param consistency, sig size, soundness
-├── SphincsC6Full.lean   ← Full CompilationModel EDSL (no oracle)
-└── artifacts/
-    └── SphincsC6Full.yul ← Verity-compiled (273 lines, 1225 bytes runtime)
-```
+Three levels of formal verification, each with increasing trust guarantees:
 
-```bash
-# Compile from Lean to Yul (no --link, no oracle)
-lake exe verity-compiler --module Contracts.SphincsC6Full -o artifacts/yul
-```
+**1. Lean functional model** (`verity/SphincsC6/`) — 3 axioms, 20 theorems, 0 sorry:
+- Proves WOTS chain roundtrip, digit sum invariant, FORS forced-zero, Merkle/FORS/chain binding
+- All axioms are irreducible keccak256 cryptographic assumptions
 
-The Verity-compiled contract verifies the same signatures as the hand-optimized ASM, with 9% gas overhead (255K vs 234K EOA call) from additional ABI safety checks.
+**2. Manual CompilationModel** (`verity/SphincsC6Full/`) — compiled by Verity to Yul:
+- Full verification pipeline in `Stmt`/`Expr` DSL, no oracle
+- Spec.lean, Invariants.lean, Proofs/Basic.lean (Verity pattern)
+- Compiled: `lake exe verity-compiler --module Contracts.SphincsC6Full`
+
+**3. `verity_contract` macro** — full Layer 1 typed-IR proofs:
+- Uses memory-as-state pattern for loop-carried variables (mstore/mload at fixed scratch slots)
+- Gets automatic typed-IR compilation correctness from Verity's generic theorem
+- Compiled: `lake exe verity-compiler --module Contracts.SphincsC6V.SphincsC6V`
+
+All three compile to Yul, deploy on Sepolia, and verify the same signatures:
+
+| Version | Gas (EOA) | Bytecode | Formal guarantee |
+|---|---|---|---|
+| Hand-optimized ASM | 234K | 1175 bytes | Differential testing only |
+| Manual CompilationModel | 255K | 1225 bytes | Verity Layer 2-3 proofs |
+| **`verity_contract` macro** | **283K** | **1403 bytes** | **Verity Layer 1-2-3 proofs** |
 
 ## Deployed Contracts & Transactions
 
@@ -135,7 +137,8 @@ The Verity-compiled contract verifies the same signatures as the hand-optimized 
 | Factory (C2-C6) | [`0x795C1386...`](https://sepolia.etherscan.io/address/0x795C138673E934c3809477d2507fBF86985f8c2F) |
 | C6 Account | [`0x79169...`](https://sepolia.etherscan.io/address/0x7916968db92A3fbaFBb13b61B60C940811689337) |
 | C6 Verifier (ASM) | [`0xc8aa8...`](https://sepolia.etherscan.io/address/0xc8aa83f6419f95bd8728ee9df225e93c6694da6b) |
-| C6 Verifier (Verity, full) | [`0xddd28...`](https://sepolia.etherscan.io/address/0xddd28faE24f10B029F55dc674d1c6105AFfBe1C8) |
+| C6 Verifier (Verity, CompilationModel) | [`0xddd28...`](https://sepolia.etherscan.io/address/0xddd28faE24f10B029F55dc674d1c6105AFfBe1C8) |
+| C6 Verifier (Verity, `verity_contract`) | [`0x1Cb55...`](https://sepolia.etherscan.io/address/0x1Cb55Ab57DA464A9A90DEC6b1560EdBE5004E069) |
 | EntryPoint v0.9 | `0x433709009B8330FDa32311DF1C2AFA402eD8D009` |
 
 **Transactions:**
