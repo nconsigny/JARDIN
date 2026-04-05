@@ -165,9 +165,9 @@ Both the hand-optimized and Verity-compiled versions are deployed on Sepolia and
 
 | Description | Gas | Tx |
 |---|---|---|
-| Frame tx — SPHINCS+ C6 pure PQ (block 534292) | 274,645 | [`0xb2dc8be4...`](https://demo.eip-8141.ethrex.xyz:8082/tx/0xb2dc8be4ad34285c6eb835db675ef0463d23d5fd53c56f543ee0fe29aa7ecfc3) |
+| Frame tx — SPHINCS+ C6 pure PQ (block 534292) | 229,867 | [`0xb2dc8be4...`](https://demo.eip-8141.ethrex.xyz:8082/tx/0xb2dc8be4ad34285c6eb835db675ef0463d23d5fd53c56f543ee0fe29aa7ecfc3) |
 
-Chain ID: 1729. Both VERIFY and SENDER frames succeeded — no ECDSA, pure post-quantum. The frame tx gas (274K) is lower than the 4337 hybrid (335K) because there is no EntryPoint overhead or ECDSA verification.
+Chain ID: 1729. Both VERIFY and SENDER frames succeeded — no ECDSA, pure post-quantum. The frame tx gas (230K) is lower than the 4337 hybrid (335K) because there is no EntryPoint overhead or ECDSA verification.
 
 ## Setup
 
