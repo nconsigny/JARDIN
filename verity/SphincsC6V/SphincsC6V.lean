@@ -60,12 +60,13 @@ verity_contract SphincsC6V where
     let sigBase := 100
     mstore 0x00 seed
 
-    -- H_msg digest
+    -- H_msg digest (domain-separated, 160 bytes)
     let r := bitAnd (calldataload sigBase) 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF00000000000000000000000000000000
     mstore 0x20 root
     mstore 0x40 r
     mstore 0x60 message
-    let digest := keccak256 0x00 0x80
+    mstore 0x80 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF
+    let digest := keccak256 0x00 0xA0
     let htIdx := bitAnd (shr 128 digest) 0xFFFFFF
 
     -- FORS+C forced-zero

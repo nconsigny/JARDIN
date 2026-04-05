@@ -88,9 +88,19 @@ pub fn th_multi(seed: U256, adrs: U256, values: &[U256]) -> U256 {
     mask_n(keccak256(&data))
 }
 
-/// H_msg(seed, root, R, message) → full 256-bit digest
+/// Domain separator for H_msg: all 0xFF.
+pub const HMSG_DOMAIN: U256 = [u64::MAX; 4];
+
+/// H_msg(seed, root, R, message, domain) → full 256-bit digest.
+/// Domain-separated: hashes 160 bytes (5 words) vs 128 for ThPair/wotsDigest.
 pub fn h_msg(seed: U256, root: U256, r: U256, message: U256) -> U256 {
-    keccak_4x32(seed, root, r, message)
+    let mut buf = [0u8; 160];
+    buf[0..32].copy_from_slice(&to_bytes32(seed));
+    buf[32..64].copy_from_slice(&to_bytes32(root));
+    buf[64..96].copy_from_slice(&to_bytes32(r));
+    buf[96..128].copy_from_slice(&to_bytes32(message));
+    buf[128..160].copy_from_slice(&to_bytes32(HMSG_DOMAIN));
+    keccak256(&buf)
 }
 
 /// Chain hash: iterate th from start_pos for `steps` applications.

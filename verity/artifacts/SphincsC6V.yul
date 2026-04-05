@@ -70,7 +70,8 @@ object "SphincsC6V" {
                         mstore(32, root)
                         mstore(64, r)
                         mstore(96, message)
-                        let digest := keccak256(0, 128)
+                        mstore(128, 115792089237316195423570985008687907853269984665640564039457584007913129639935)
+                        let digest := keccak256(0, 160)
                         let htIdx := and(shr(128, digest), 16777215)
                         let lastIdx := and(shr(112, digest), 65535)
                         if iszero(eq(lastIdx, 0)) {

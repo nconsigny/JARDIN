@@ -68,12 +68,13 @@ contract SphincsC2Asm {
             // R = sig[0..15], left-aligned in bytes32
             let R := and(calldataload(SIG_BASE), N_MASK)
 
-            // digest = keccak256(seed || root || R || message)
+            // digest = keccak256(seed || root || R || message || domain) — 160 bytes
             // seed already at 0x00
             mstore(0x20, root)
             mstore(0x40, R)
             mstore(0x60, calldataload(0x04))  // message
-            let digest := keccak256(0x00, 0x80)
+            mstore(0x80, 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF)
+            let digest := keccak256(0x00, 0xA0)
 
             // Restore seed at 0x00 (keccak didn't modify memory, but let's be safe
             // for subsequent operations — actually keccak256 only reads, so 0x00 still has seed)

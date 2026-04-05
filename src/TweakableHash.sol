@@ -65,8 +65,11 @@ library TweakableHash {
         }
     }
 
-    /// @notice Message hash: H_msg(seed, root, R, message) for digest generation
-    /// @dev Produces a full 256-bit hash used for extracting FORS/PORS indices + hypertree index
+    /// @notice Message hash: H_msg(seed, root, R, message, domain) for digest generation
+    /// @dev Domain-separated: hashes 160 bytes (5 words) vs 128 for ThPair/wotsDigest.
+    ///      The 5th word (all 0xFF) ensures H_msg can never collide with Th/ThPair/ThMulti
+    ///      regardless of input values, because keccak's sponge absorbs different-length inputs
+    ///      into different states.
     function hMsg(
         bytes32 seed,
         bytes32 root,
@@ -79,7 +82,8 @@ library TweakableHash {
             mstore(add(m, 0x20), root)
             mstore(add(m, 0x40), R)
             mstore(add(m, 0x60), message)
-            digest := keccak256(m, 0x80)
+            mstore(add(m, 0x80), 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF)
+            digest := keccak256(m, 0xA0)
         }
     }
 

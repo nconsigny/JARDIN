@@ -41,13 +41,14 @@ contract SphincsC6Asm {
             mstore(0x00, seed)
 
             // ============================================================
-            // STEP 1: H_msg digest
+            // STEP 1: H_msg digest (domain-separated, 160 bytes)
             // ============================================================
             let R := and(calldataload(SIG_BASE), N_MASK)
             mstore(0x20, root)
             mstore(0x40, R)
             mstore(0x60, calldataload(0x04))
-            let digest := keccak256(0x00, 0x80)
+            mstore(0x80, 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF)
+            let digest := keccak256(0x00, 0xA0)
 
             // htIdx = (digest >> 128) & (2^24-1)
             let htIdx := and(shr(128, digest), 0xFFFFFF)

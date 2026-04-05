@@ -110,8 +110,14 @@ def th_multi(seed, adrs, vals):
         data += to_b32(v)
     return keccak256(data) & N_MASK
 
+HMSG_DOMAIN = (1 << 256) - 1  # 0xFFFF...FF — domain separator for H_msg
+
 def h_msg(seed, root, R, message):
-    return _keccak_4x32(seed, root, R, message)
+    """Domain-separated H_msg: keccak256(seed || root || R || message || domain).
+    Hashes 160 bytes (5 words) vs 128 for ThPair/wotsDigest, ensuring
+    unconditional domain separation via keccak's sponge construction."""
+    data = to_b32(seed) + to_b32(root) + to_b32(R) + to_b32(message) + to_b32(HMSG_DOMAIN)
+    return keccak256(data)
 
 def chain_hash(seed, adrs, val, start_pos, steps):
     pos_clear = FULL ^ (0xFFFFFFFF << 32)
