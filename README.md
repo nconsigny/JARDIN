@@ -147,10 +147,12 @@ Both the hand-optimized and Verity-compiled versions are deployed on Sepolia and
 | Description | Gas | Tx |
 |---|---|---|
 | C6 hybrid UserOp (ECDSA + SPHINCS+) | 335,021 | [`0x8ffc857b...`](https://sepolia.etherscan.io/tx/0x8ffc857b5858175e9bcf7f1121653eef320e6b13f7a89b20f59d09f7bec189d1) |
-| C6 verify — hand-optimized ASM | 231,350 | [`0xf91c864f...`](https://sepolia.etherscan.io/tx/0xf91c864f1e51fbc65d1a25815304632b2c10feba8b12c1ca2e6562dbfb2423a3) |
-| C6 verify — Verity-compiled | 268,107 | [`0xca402720...`](https://sepolia.etherscan.io/tx/0xca4027205df0960cbb0982e05898ac2d7f877f8c0afaa41637934c3342d290ea) |
+| C6 EOA verify — hand-optimized ASM | 231,350 | [`0xf91c864f...`](https://sepolia.etherscan.io/tx/0xf91c864f1e51fbc65d1a25815304632b2c10feba8b12c1ca2e6562dbfb2423a3) |
+| C6 EOA verify — Verity-compiled | 268,107 | [`0xca402720...`](https://sepolia.etherscan.io/tx/0xca4027205df0960cbb0982e05898ac2d7f877f8c0afaa41637934c3342d290ea) |
 | C2 hybrid UserOp | 412,126 | See `trace_c2_summary.txt` |
 | C5 hybrid UserOp | 403,636 | See `trace_c5_summary.txt` |
+
+**Gas breakdown note:** The EOA verify calls (231K / 268K) include the 21K base transaction cost and ~54K calldata cost for the 3352-byte signature. The pure SPHINCS+ compute cost is **~156K gas** — visible in the C6 hybrid UserOp trace as the inner `verifier.staticcall()`, where calldata is already paid by the outer transaction.
 
 ### ethrex Testnet (EIP-8141 Frame Tx — Pure PQ)
 
@@ -161,11 +163,11 @@ Both the hand-optimized and Verity-compiled versions are deployed on Sepolia and
 
 **Transactions:**
 
-| Description | Tx |
-|---|---|
-| Frame tx — SPHINCS+ C6 pure PQ verification (block 534292) | [`0xb2dc8be4...`](https://demo.eip-8141.ethrex.xyz:8082/tx/0xb2dc8be4ad34285c6eb835db675ef0463d23d5fd53c56f543ee0fe29aa7ecfc3) |
+| Description | Gas | Tx |
+|---|---|---|
+| Frame tx — SPHINCS+ C6 pure PQ (block 534292) | 274,645 | [`0xb2dc8be4...`](https://demo.eip-8141.ethrex.xyz:8082/tx/0xb2dc8be4ad34285c6eb835db675ef0463d23d5fd53c56f543ee0fe29aa7ecfc3) |
 
-Chain ID: 1729. Both VERIFY and SENDER frames succeeded — no ECDSA, pure post-quantum.
+Chain ID: 1729. Both VERIFY and SENDER frames succeeded — no ECDSA, pure post-quantum. The frame tx gas (274K) is lower than the 4337 hybrid (335K) because there is no EntryPoint overhead or ECDSA verification.
 
 ## Setup
 
