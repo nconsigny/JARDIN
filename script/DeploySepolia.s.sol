@@ -2,12 +2,12 @@
 pragma solidity ^0.8.28;
 
 import "forge-std/Script.sol";
+import "../src/SPHINCs-C6Asm.sol";
 import "../src/SphincsAccountFactory.sol";
 
-/// @title DeploySepolia - Deploy SphincsAccountFactory to Sepolia
-/// @notice Run: forge script script/DeploySepolia.s.sol --rpc-url sepolia --broadcast --verify
+/// @title DeploySepolia - Deploy shared C6 verifier + factory
+/// @notice Run: forge script script/DeploySepolia.s.sol --rpc-url sepolia --broadcast
 contract DeploySepolia is Script {
-    // EntryPoint v0.9.0
     address constant ENTRYPOINT_V09 = 0x433709009B8330FDa32311DF1C2AFA402eD8D009;
 
     function run() external {
@@ -15,12 +15,16 @@ contract DeploySepolia is Script {
 
         vm.startBroadcast(deployerKey);
 
-        SphincsAccountFactory factory = new SphincsAccountFactory(
-            IEntryPoint(ENTRYPOINT_V09)
-        );
+        // 1. Deploy shared verifier (once for everyone)
+        SphincsC6Asm verifier = new SphincsC6Asm();
+        console.log("Shared verifier:", address(verifier));
 
-        console.log("Factory deployed at:", address(factory));
-        console.log("EntryPoint:", ENTRYPOINT_V09);
+        // 2. Deploy factory (points to shared verifier)
+        SphincsAccountFactory factory = new SphincsAccountFactory(
+            IEntryPoint(ENTRYPOINT_V09),
+            address(verifier)
+        );
+        console.log("Factory:", address(factory));
 
         vm.stopBroadcast();
     }

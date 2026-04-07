@@ -1,76 +1,54 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
 
-import "@openzeppelin/contracts/utils/Create2.sol";
 import "account-abstraction/interfaces/IEntryPoint.sol";
 import "./SphincsAccount.sol";
-import "./SPHINCs-C2Asm.sol";
-import "./SPHINCs-C6Asm.sol";
 
-/// @title SphincsAccountFactory - Factory for hybrid ECDSA + SPHINCS+ 4337 accounts
-/// @notice Deploys a per-user SPHINCS+ verifier and a SphincsAccount in a single call.
-///         Supports variant 2 (FORS+C h=18) and variant 6 (FORS+C h=24).
+/// @title SphincsAccountFactory - Factory using a SHARED verifier for all accounts
+/// @notice Deploys only the account contract (not a per-user verifier).
+///         The shared SphincsC6Shared verifier is deployed once and its address
+///         is set in the factory constructor.
 contract SphincsAccountFactory {
     IEntryPoint public immutable entryPoint;
+    address public immutable sharedVerifier;  // SphincsC6Shared — deployed once
 
-    event AccountCreated(address indexed account, address indexed verifier, address indexed owner, uint8 variant);
+    event AccountCreated(address indexed account, address indexed owner);
 
-    error InvalidVariant(uint8 variant);
-
-    constructor(IEntryPoint _entryPoint) {
+    constructor(IEntryPoint _entryPoint, address _sharedVerifier) {
         entryPoint = _entryPoint;
+        sharedVerifier = _sharedVerifier;
     }
 
-    /// @param variant     2 = FORS+C h=18, 6 = FORS+C h=24 (gas-optimal)
+    /// @notice Create a new hybrid account with SPHINCS+ C6
+    /// @param ecdsaOwner The ECDSA signer address
+    /// @param pkSeed SPHINCS+ public seed
+    /// @param pkRoot SPHINCS+ Merkle root
     function createAccount(
         address ecdsaOwner,
         bytes32 pkSeed,
-        bytes32 pkRoot,
-        uint8 variant
+        bytes32 pkRoot
     ) external returns (SphincsAccount account) {
-        bytes32 salt = keccak256(abi.encodePacked(ecdsaOwner, pkSeed, pkRoot, variant));
+        bytes32 salt = keccak256(abi.encodePacked(ecdsaOwner, pkSeed, pkRoot));
 
-        address verifierAddr;
-        if (variant == 2) {
-            verifierAddr = address(new SphincsC2Asm{salt: salt}(pkSeed, pkRoot));
-        } else if (variant == 6) {
-            verifierAddr = address(new SphincsC6Asm{salt: salt}(pkSeed, pkRoot));
-        } else {
-            revert InvalidVariant(variant);
-        }
+        account = new SphincsAccount{salt: salt}(
+            entryPoint, ecdsaOwner, sharedVerifier, pkSeed, pkRoot
+        );
 
-        account = new SphincsAccount{salt: salt}(entryPoint, ecdsaOwner, verifierAddr);
-        emit AccountCreated(address(account), verifierAddr, ecdsaOwner, variant);
+        emit AccountCreated(address(account), ecdsaOwner);
     }
 
     function getAddress(
         address ecdsaOwner,
         bytes32 pkSeed,
-        bytes32 pkRoot,
-        uint8 variant
+        bytes32 pkRoot
     ) external view returns (address) {
-        bytes32 salt = keccak256(abi.encodePacked(ecdsaOwner, pkSeed, pkRoot, variant));
-
-        bytes32 verifierHash;
-        if (variant == 2) {
-            verifierHash = keccak256(abi.encodePacked(
-                type(SphincsC2Asm).creationCode,
-                abi.encode(pkSeed, pkRoot)
-            ));
-        } else if (variant == 6) {
-            verifierHash = keccak256(abi.encodePacked(
-                type(SphincsC6Asm).creationCode,
-                abi.encode(pkSeed, pkRoot)
-            ));
-        } else {
-            revert InvalidVariant(variant);
-        }
-        address verifierAddr = Create2.computeAddress(salt, verifierHash);
-
-        bytes32 accountHash = keccak256(abi.encodePacked(
+        bytes32 salt = keccak256(abi.encodePacked(ecdsaOwner, pkSeed, pkRoot));
+        bytes32 hash = keccak256(abi.encodePacked(
             type(SphincsAccount).creationCode,
-            abi.encode(entryPoint, ecdsaOwner, verifierAddr)
+            abi.encode(entryPoint, ecdsaOwner, sharedVerifier, pkSeed, pkRoot)
         ));
-        return Create2.computeAddress(salt, accountHash);
+        return address(uint160(uint256(keccak256(abi.encodePacked(
+            bytes1(0xff), address(this), salt, hash
+        )))));
     }
 }

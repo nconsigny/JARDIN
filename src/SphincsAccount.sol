@@ -6,29 +6,39 @@ import "account-abstraction/core/Helpers.sol";
 import "account-abstraction/interfaces/IEntryPoint.sol";
 import "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 
-/// @title SphincsAccount - Hybrid ECDSA + SPHINCS+ ERC-4337 Smart Account
-/// @notice Post-quantum secure account requiring both ECDSA and SPHINCS+ signatures.
-///         The SPHINCS+ verifier is a separate contract storing the user's pkSeed/pkRoot.
+/// @title SphincsAccount - Hybrid ECDSA + SPHINCS+ account using a SHARED verifier
+/// @notice The account stores pkSeed/pkRoot and passes them to a shared stateless verifier.
+///         The shared verifier is deployed once and used by all accounts.
+///         Follows the ZKnox/Kohaku pattern (ISigVerifier with keys as arguments).
 contract SphincsAccount is BaseAccount {
     using ECDSA for bytes32;
 
     IEntryPoint private immutable _entryPoint;
-    address public immutable owner;       // ECDSA signer (EOA address)
-    address public immutable verifier;    // SphincsWc*Asm contract instance
+    address public immutable owner;          // ECDSA signer
+    address public immutable verifier;       // Shared SphincsC6Shared address (same for all users)
+    bytes32 public immutable pkSeed;         // SPHINCS+ public seed (per-user)
+    bytes32 public immutable pkRoot;         // SPHINCS+ Merkle root (per-user)
 
     error NotOwnerOrEntryPoint();
 
-    constructor(IEntryPoint ep, address _owner, address _verifier) {
+    constructor(
+        IEntryPoint ep,
+        address _owner,
+        address _verifier,
+        bytes32 _pkSeed,
+        bytes32 _pkRoot
+    ) {
         _entryPoint = ep;
         owner = _owner;
         verifier = _verifier;
+        pkSeed = _pkSeed;
+        pkRoot = _pkRoot;
     }
 
     function entryPoint() public view override returns (IEntryPoint) {
         return _entryPoint;
     }
 
-    /// @notice Only entryPoint or owner can call execute
     function _requireForExecute() internal view override {
         require(
             msg.sender == address(entryPoint()) || msg.sender == owner,
@@ -37,26 +47,27 @@ contract SphincsAccount is BaseAccount {
     }
 
     /// @notice Validate hybrid signature: abi.encode(ecdsaSig, sphincsSig)
-    /// @dev ecdsaSig = 65 bytes (r,s,v), sphincsSig = variable length SPHINCS+ sig
     function _validateSignature(
         PackedUserOperation calldata userOp,
         bytes32 userOpHash
     ) internal view override returns (uint256 validationData) {
-        // Decode hybrid signature
         (bytes memory ecdsaSig, bytes memory sphincsSig) = abi.decode(
             userOp.signature,
             (bytes, bytes)
         );
 
-        // 1. Verify ECDSA signature
+        // 1. Verify ECDSA
         address recovered = userOpHash.recover(ecdsaSig);
         if (recovered != owner) {
             return SIG_VALIDATION_FAILED;
         }
 
-        // 2. Verify SPHINCS+ signature via verifier contract
+        // 2. Verify SPHINCS+ via shared verifier (keys passed as arguments)
         (bool success, bytes memory result) = verifier.staticcall(
-            abi.encodeWithSignature("verify(bytes32,bytes)", userOpHash, sphincsSig)
+            abi.encodeWithSignature(
+                "verify(bytes32,bytes32,bytes32,bytes)",
+                pkSeed, pkRoot, userOpHash, sphincsSig
+            )
         );
         if (!success || result.length < 32) {
             return SIG_VALIDATION_FAILED;
