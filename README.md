@@ -159,18 +159,9 @@ cd signer-wasm && cargo test --release -- --ignored
 
 ## Formal Verification (Lean 4 / Verity)
 
-The C6 verifier is formally verified in Lean 4 via [Verity](https://github.com/Th0rgal/verity): **3 axioms** (keccak256 cryptographic assumptions), **20 theorems**, **0 sorry**.
+### Verified Kernel
 
-The `verity_contract` macro version gets full Layer 1-2-3 compilation correctness proofs. See [`verity/README.md`](verity/README.md) for the proof inventory and build instructions.
-
-| Version | Gas (EOA) | Formal guarantee |
-|---|---|---|
-| Hand-optimized ASM | 234K | Differential testing |
-| **`verity_contract` macro** | **283K** | **Verity Layer 1-2-3 proofs** |
-
-### Verified Merkle Kernel
-
-This repo includes a very small formally checked artifact in [`verity/SphincsKernel/`](verity/SphincsKernel/):
+This repo now includes a very small formally checked artifact:
 
 - a Merkle acceptance kernel for SPHINCS-style witnesses,
 - with the public claim that `verifyPath` accepts exactly the typed witnesses whose reconstructed root matches the stored root,
@@ -185,6 +176,25 @@ Why that is still useful:
 - a real verifier can derive or decode a typed witness off-chain or in unverified code,
 - pass that witness to the kernel,
 - and rely on a machine-checked guarantee about the exact on-chain acceptance rule.
+
+### Full C6 Verifier
+
+The verified artifact in this repo is a small acceptance kernel in [`verity/SphincsKernel/`](verity/SphincsKernel/).
+
+It proves a narrow but strong property:
+
+- the Lean model defines exactly which fixed-depth Merkle witnesses are accepted,
+- a typed witness reconstructs exactly one root,
+- `verifyPath` returns `true` iff that reconstructed root equals the configured root,
+- `verifyPackedPath` returns `true` iff the packed input is canonical, decodes to a typed witness, and that typed witness is accepted by the same root-equality rule,
+- verification is read-only.
+
+The kernel exposes two interfaces:
+
+- `verifyPath`: explicit witness fields plus 4 direction booleans,
+- `verifyPackedPath`: the same witness with directions packed into the low 4 bits of one word.
+
+This is useful because it makes one concrete class of bugs impossible: the deployed acceptance contract cannot silently accept a different witness than the Lean model accepts.
 
 What is not claimed:
 
