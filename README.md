@@ -175,26 +175,36 @@ cd signer-wasm && cargo test --release -- --ignored  # Rust signer roundtrip
 
 ## Formal Verification (Lean 4 / Verity)
 
-The repository now treats formal verification more narrowly and more honestly.
+The verified artifact in this repo is a small acceptance kernel in [`verity/SphincsKernel/`](verity/SphincsKernel/).
 
-Instead of claiming that the entire C6 SPHINCS- verifier is already proved end-to-end in Verity, the recommended verified artifact is a small Verity kernel in [`verity/SphincsKernel/`](verity/SphincsKernel/) that:
+It proves a narrow but strong property:
 
-- reconstructs a fixed-depth Merkle root,
-- compares it to the stored `pkRoot`,
-- proves that the compiled contract implements exactly that Lean model,
-- uses no local obligations and no axiomatized primitives.
+- the Lean model defines exactly which fixed-depth Merkle witnesses are accepted,
+- the Verity contract implements that same rule,
+- the compiled EVM artifact preserves that rule,
+- verification is read-only.
 
-This is the right kind of guarantee for Verity today: small, explicit, replayable, and easy to audit. The larger `verity/SphincsC6/` model remains useful as a research model and reference, but it should not be read as a finished end-to-end Verity proof of the production verifier.
+The kernel exposes two interfaces:
 
-See [`verity/README.md`](verity/README.md) for the updated architecture, build commands, and exact trust surface.
+- `verifyPath`: explicit witness fields plus 4 direction booleans,
+- `verifyPackedPath`: the same witness with directions packed into the low 4 bits of one word.
 
-The repository also includes a direct replay test for the recommended kernel:
+This is useful because it makes one concrete class of bugs impossible: the deployed acceptance contract cannot silently accept a different witness than the Lean model accepts.
 
-- it recompiles the generated Yul from `verity/artifacts/sphincs-kernel/MerkleKernel.yul`,
+What is not claimed:
+
+- this is not a proof of full SPHINCS cryptographic security,
+- this is not an end-to-end proof of the entire production C6 verifier,
+- the kernel's `compress` function is a small stand-in, not a real SPHINCS hash primitive.
+
+The repo also includes a direct EVM replay test for the kernel:
+
+- it recompiles `verity/artifacts/sphincs-kernel/MerkleKernel.yul`,
 - deploys that bytecode in Foundry,
-- compares it against a tiny Solidity reference model on fuzzed inputs.
+- checks named vectors,
+- fuzzes both explicit and packed witness entrypoints against a Solidity reference model.
 
-That gives a much clearer story than the older "full verifier in Verity" narrative: the verified artifact is small, concrete, and exercised exactly at the EVM boundary.
+See [`verity/README.md`](verity/README.md) for the exact specs, theorem shape, strict build commands, and trust boundary.
 
 ## References
 

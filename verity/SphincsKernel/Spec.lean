@@ -22,6 +22,12 @@ def previewPath_spec
   result = previewPathModel leaf sibling0 sibling1 sibling2 sibling3
     sibling0OnLeft sibling1OnLeft sibling2OnLeft sibling3OnLeft
 
+def previewPackedPath_spec
+    (result : Uint256)
+    (leaf sibling0 sibling1 sibling2 sibling3 directions : Uint256) :
+    Prop :=
+  result = previewPackedPathModel leaf sibling0 sibling1 sibling2 sibling3 directions
+
 def verifyPath_spec
     (result : Bool)
     (s s' : ContractState)
@@ -30,6 +36,14 @@ def verifyPath_spec
     Prop :=
   result = verifyPathModel (s.storage 0) leaf sibling0 sibling1 sibling2 sibling3
     sibling0OnLeft sibling1OnLeft sibling2OnLeft sibling3OnLeft ∧
+  s' = s
+
+def verifyPackedPath_spec
+    (result : Bool)
+    (s s' : ContractState)
+    (leaf sibling0 sibling1 sibling2 sibling3 directions : Uint256) :
+    Prop :=
+  result = verifyPackedPathModel (s.storage 0) leaf sibling0 sibling1 sibling2 sibling3 directions ∧
   s' = s
 
 end SphincsKernel.Spec

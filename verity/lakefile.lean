@@ -16,4 +16,5 @@ lean_lib Proofs where
 
 lean_lib SphincsKernel where
   srcDir := "."
-  roots := #[`SphincsKernel.Model, `SphincsKernel.MerkleKernel, `SphincsKernel.Spec]
+  roots := #[`SphincsKernel.Model, `SphincsKernel.MerkleKernel, `SphincsKernel.Spec,
+    `SphincsKernel.Examples, `SphincsKernel.Proofs.Basic, `SphincsKernel.Proofs.Correctness]

@@ -20,6 +20,16 @@ theorem verifyPath_sound
   simp [verifyPath, previewPath, verifyPathModel, previewPathModel, beq_iff_eq] at h
   exact h
 
+theorem verifyPath_iff_reconstructs_stored_root
+    (s : ContractState)
+    (leaf sibling0 sibling1 sibling2 sibling3 : Uint256)
+    (sibling0OnLeft sibling1OnLeft sibling2OnLeft sibling3OnLeft : Bool) :
+    ((verifyPath leaf sibling0 sibling1 sibling2 sibling3
+      sibling0OnLeft sibling1OnLeft sibling2OnLeft sibling3OnLeft).run s).fst = true ↔
+      previewPathModel leaf sibling0 sibling1 sibling2 sibling3
+        sibling0OnLeft sibling1OnLeft sibling2OnLeft sibling3OnLeft = s.storage 0 := by
+  simp [verifyPath, previewPath, verifyPathModel, previewPathModel, beq_iff_eq]
+
 theorem verifyPath_complete
     (s : ContractState)
     (leaf sibling0 sibling1 sibling2 sibling3 : Uint256)
@@ -49,6 +59,38 @@ theorem verifyPath_preserves_state
     ((verifyPath leaf sibling0 sibling1 sibling2 sibling3
       sibling0OnLeft sibling1OnLeft sibling2OnLeft sibling3OnLeft).run s).snd = s := by
   simp [verifyPath, previewPath]
+
+theorem previewPackedPath_decodes_witness
+    (leaf sibling0 sibling1 sibling2 sibling3 directions : Uint256) :
+    previewPackedPathModel leaf sibling0 sibling1 sibling2 sibling3 directions =
+      previewWitnessModel
+        (decodePackedWitness (mkPackedWitness leaf sibling0 sibling1 sibling2 sibling3 directions)) := by
+  rfl
+
+theorem verifyPackedPath_iff_decoded_witness_matches_root
+    (s : ContractState)
+    (leaf sibling0 sibling1 sibling2 sibling3 directions : Uint256) :
+    ((verifyPackedPath leaf sibling0 sibling1 sibling2 sibling3 directions).run s).fst = true ↔
+      previewWitnessModel
+        (decodePackedWitness (mkPackedWitness leaf sibling0 sibling1 sibling2 sibling3 directions)) =
+        s.storage 0 := by
+  simp [verifyPackedPath, verifyPackedPathModel, verifyWitnessModel, beq_iff_eq]
+
+theorem verifyPackedPath_preserves_state
+    (s : ContractState)
+    (leaf sibling0 sibling1 sibling2 sibling3 directions : Uint256) :
+    ((verifyPackedPath leaf sibling0 sibling1 sibling2 sibling3 directions).run s).snd = s := by
+  simp [verifyPackedPath]
+
+theorem configure_then_verifyPacked_roundtrip
+    (s : ContractState)
+    (leaf sibling0 sibling1 sibling2 sibling3 directions : Uint256) :
+    let expected := previewPackedPathModel leaf sibling0 sibling1 sibling2 sibling3 directions
+    let s' := ((configureRoot expected).run s).snd
+    ((verifyPackedPath leaf sibling0 sibling1 sibling2 sibling3 directions).run s').fst = true := by
+  intro expected s'
+  simp [configureRoot, verifyPackedPath, verifyPackedPathModel, previewPackedPathModel,
+    verifyWitnessModel, pkRoot]
 
 theorem configure_then_verify_roundtrip
     (s : ContractState)

@@ -1,60 +1,60 @@
-# Verity Architecture for SPHINCS-
+# Verity Kernel for SPHINCS-
 
-This directory now distinguishes two very different things:
+This directory contains a small Verity-compiled acceptance kernel for SPHINCS-style Merkle witnesses.
 
-- `SphincsC6/`: an exploratory Lean model of the current SPHINCS- C6 verifier.
-- `SphincsKernel/`: the recommended Verity architecture, intentionally small and fully replayable.
+It proves that the deployed EVM bytecode accepts exactly the witnesses accepted by the Lean model.
 
-## Why this change
+It does not prove SPHINCS cryptographic security, nor the full production C6 verifier.
 
-The previous `SphincsC6Full/` and `SphincsC6V/` trees tried to make a very large SPHINCS verifier look "fully verified" inside Verity, but the important correctness argument was either absent, vacuous, or pushed behind local assumptions. That is not the right way to use Verity if the goal is to claim strong guarantees.
+## What users should know
 
-The right use of Verity here is to verify a tiny contract kernel whose behavior is:
+The verified artifact is [`SphincsKernel/`](./SphincsKernel/).
 
-1. easy to specify,
-2. easy to audit,
-3. easy to replay in CI,
-4. compiled through Verity with no local obligations and no axiomatized primitives.
+It stores one expected root and exposes two read-only acceptance APIs:
 
-## Recommended kernel
+- `verifyPath`: takes a fully decoded witness with 4 explicit direction booleans.
+- `verifyPackedPath`: takes the same witness with the directions packed into the low 4 bits of one word.
 
-`SphincsKernel/` is that kernel.
+The headline guarantees are simple:
 
-It stores an expected root and exposes two pure operations:
+- `previewPath` and `previewPackedPath` reconstruct exactly the root defined by the Lean model.
+- `verifyPath` returns `true` if and only if the reconstructed root equals the stored root.
+- `verifyPackedPath` returns `true` if and only if the decoded packed witness reconstructs the stored root.
+- Both verification entrypoints preserve storage.
+- The contract is compiled with `--deny-local-obligations` and `--deny-axiomatized-primitives`.
 
-- `previewPath`: reconstruct a fixed-depth Merkle root from a leaf plus four auth nodes.
-- `verifyPath`: accept iff the reconstructed root equals the stored root.
+For users evaluating the trust boundary, the important point is this:
 
-The model is deliberately tiny:
+- Lean proves the acceptance rule.
+- Verity proves the compiled EVM contract implements that rule.
+- This kernel does not claim that the toy `compress` function is cryptographically secure.
 
-- `Model.lean` defines the mathematical kernel.
-- `MerkleKernel.lean` defines the Verity contract.
-- `Spec.lean` defines the exact contract specs.
-- `Examples.lean` contains concrete sample scenarios for local exploration.
+## File map
 
-## What is actually guaranteed
+- `SphincsKernel/Model.lean`: typed witness model, packed witness decoding, and acceptance rule.
+- `SphincsKernel/MerkleKernel.lean`: Verity contract that calls the shared Lean model directly.
+- `SphincsKernel/Spec.lean`: exact function-level specs.
+- `SphincsKernel/Proofs/Correctness.lean`: user-facing theorems such as acceptance iff reconstructed root matches storage.
+- `SphincsKernel/Examples.lean`: named examples for a concrete witness.
 
-For `SphincsKernel/`, the guarantee is exact and simple:
+## Main properties
 
-- the EVM contract computes the same root as the Lean model;
-- `verifyPath = true` iff the reconstructed root equals the stored root;
-- `verifyPath` is read-only;
-- there are no `sorry`;
-- there are no local unsafe/refinement obligations;
-- there are no axiomatized primitives such as `keccak256`.
+The core statements are:
 
-This is the kind of statement Verity is well-suited to make today.
+- A witness is accepted exactly when it reconstructs the configured root.
+- A packed witness is accepted exactly when its decoded witness reconstructs the configured root.
+- Verification is read-only.
+- If you configure the contract with the root reconstructed from a witness, that witness will verify.
 
-## What this means for SPHINCS-
+That is the right scale of claim for Verity today: small, inspectable, replayable, and strong.
 
-For the full SPHINCS- verifier, the better architecture is:
+## What is not proved
 
-1. keep the heavy cryptographic construction as a pure reference model and test oracle;
-2. isolate the smallest on-chain acceptance kernel;
-3. verify that kernel end-to-end with Verity;
-4. only claim the guarantees that the verified kernel really provides.
+- The full `SphincsC6/` verifier is not claimed here as an end-to-end Verity proof.
+- The arithmetic `compress` function is a stand-in for a hash compression primitive.
+- The repo does not claim post-quantum security from this kernel alone.
 
-In practice, that means Verity should own the boundary that decides acceptance from a compact, typed witness, not a giant handwritten reimplementation of every SPHINCS subroutine with informal proof gaps.
+What this kernel buys you is a clean verified boundary for on-chain acceptance logic.
 
 ## Build and strict checks
 
@@ -71,7 +71,7 @@ lake exe verity-compiler \
   --output artifacts/sphincs-kernel
 ```
 
-## EVM replay test
+## EVM replay tests
 
 The Yul artifact is not just generated; it is exercised directly in Foundry.
 
@@ -84,16 +84,20 @@ That test:
 
 - recompiles `verity/artifacts/sphincs-kernel/MerkleKernel.yul` into deployable bytecode,
 - deploys the raw Verity artifact,
-- checks named example vectors,
+- checks named example vectors for both explicit and packed witnesses,
 - fuzzes `previewPath` against a tiny Solidity reference model,
+- fuzzes `previewPackedPath` against a reference packed-decoding model,
 - fuzzes `verifyPath` to show acceptance iff `candidateRoot == storedRoot`,
+- fuzzes `verifyPackedPath` to show acceptance iff the decoded witness matches the stored root,
 - checks that verification preserves storage.
 
-## Narrative value
+## Why this is useful for SPHINCS-
 
-This kernel is intentionally modest, but the value is obvious:
+For a real SPHINCS deployment, this suggests the better split:
 
-- the acceptance rule is small enough to understand in one sitting;
-- the spec matches the implementation exactly;
-- the compiled contract inherits Verity's compilation guarantees;
-- the repo stops overstating what is and is not formally proved.
+1. Keep the heavy cryptographic logic as a pure reference model and test oracle.
+2. Encode the on-chain acceptance boundary as a small typed witness.
+3. Verify that boundary end-to-end with Verity.
+4. State the guarantees at that boundary, not beyond it.
+
+That gives users something they can actually reason about: what exact witness shape is accepted on-chain, and what exact property the contract enforces.

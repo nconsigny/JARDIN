@@ -47,6 +47,19 @@ theorem previewPath_preserves_state
       sibling0OnLeft sibling1OnLeft sibling2OnLeft sibling3OnLeft).run s).snd = s := by
   simp [previewPath]
 
+theorem previewPackedPath_returns_model
+    (leaf sibling0 sibling1 sibling2 sibling3 directions : Uint256)
+    (s : ContractState) :
+    let result := ((previewPackedPath leaf sibling0 sibling1 sibling2 sibling3 directions).run s).fst
+    previewPackedPath_spec result leaf sibling0 sibling1 sibling2 sibling3 directions := by
+  simp [previewPackedPath_spec, previewPackedPath]
+
+theorem previewPackedPath_preserves_state
+    (leaf sibling0 sibling1 sibling2 sibling3 directions : Uint256)
+    (s : ContractState) :
+    ((previewPackedPath leaf sibling0 sibling1 sibling2 sibling3 directions).run s).snd = s := by
+  simp [previewPackedPath]
+
 theorem verifyPath_meets_spec
     (s : ContractState)
     (leaf sibling0 sibling1 sibling2 sibling3 : Uint256)
@@ -59,5 +72,13 @@ theorem verifyPath_meets_spec
     cases sibling3OnLeft <;>
     simp [Contract.run, Verity.bind, Bind.bind, verifyPath_spec, verifyPath, verifyPathModel,
       previewPathModel, step, compress]
+
+theorem verifyPackedPath_meets_spec
+    (s : ContractState)
+    (leaf sibling0 sibling1 sibling2 sibling3 directions : Uint256) :
+    let outcome := (verifyPackedPath leaf sibling0 sibling1 sibling2 sibling3 directions).run s
+    verifyPackedPath_spec outcome.fst s outcome.snd leaf sibling0 sibling1 sibling2 sibling3
+      directions := by
+  simp [Contract.run, Verity.bind, Bind.bind, verifyPackedPath_spec, verifyPackedPath]
 
 end SphincsKernel.Proofs

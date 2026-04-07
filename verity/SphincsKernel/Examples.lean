@@ -12,15 +12,31 @@ def sampleSibling0 : Uint256 := 11
 def sampleSibling1 : Uint256 := 13
 def sampleSibling2 : Uint256 := 17
 def sampleSibling3 : Uint256 := 19
+def sampleDirections : Uint256 := 10
+
+def sampleWitness : MerkleWitness :=
+  mkWitness sampleLeaf sampleSibling0 sampleSibling1 sampleSibling2 sampleSibling3
+    false true false true
+
+example :
+    decodePackedWitness
+      (mkPackedWitness sampleLeaf sampleSibling0 sampleSibling1 sampleSibling2 sampleSibling3
+        sampleDirections) = sampleWitness := by
+  native_decide
 
 def acceptedRoot : Uint256 :=
-  previewPathModel sampleLeaf sampleSibling0 sampleSibling1 sampleSibling2 sampleSibling3
-    false true false true
+  previewWitnessModel sampleWitness
 
 example :
     verifyPathModel acceptedRoot sampleLeaf sampleSibling0 sampleSibling1 sampleSibling2 sampleSibling3
       false true false true = true := by
   simp [acceptedRoot, verifyPathModel]
+
+example :
+    verifyPackedPathModel acceptedRoot sampleLeaf sampleSibling0 sampleSibling1 sampleSibling2 sampleSibling3
+      sampleDirections = true := by
+  simp [acceptedRoot, verifyPackedPathModel, sampleDirections, verifyWitnessModel, sampleWitness,
+    decodePackedWitness, mkPackedWitness, decodeDirectionBit, Contracts.bitAnd, beq_iff_eq]
 
 example :
     verifyPathModel (add acceptedRoot 1) sampleLeaf sampleSibling0 sampleSibling1 sampleSibling2 sampleSibling3
@@ -46,10 +62,25 @@ example :
   simp [acceptedRoot, previewPath, Contract.run]
 
 example :
+    (previewPackedPath sampleLeaf sampleSibling0 sampleSibling1 sampleSibling2 sampleSibling3
+      sampleDirections).run Verity.defaultState =
+      ContractResult.success acceptedRoot Verity.defaultState := by
+  simp [acceptedRoot, previewPackedPath, previewPackedPathModel, sampleDirections, sampleWitness,
+    decodePackedWitness, mkPackedWitness, decodeDirectionBit, Contracts.bitAnd, Contract.run]
+
+example :
     (verifyPath sampleLeaf sampleSibling0 sampleSibling1 sampleSibling2 sampleSibling3
       false true false true).run configuredState =
       ContractResult.success true configuredState := by
   simp [configuredState, acceptedRoot, verifyPath, configureRoot, pkRoot, Contract.run]
+
+example :
+    (verifyPackedPath sampleLeaf sampleSibling0 sampleSibling1 sampleSibling2 sampleSibling3
+      sampleDirections).run configuredState =
+      ContractResult.success true configuredState := by
+  simp [configuredState, acceptedRoot, verifyPackedPath, configureRoot, verifyPackedPathModel,
+    sampleDirections, pkRoot, decodePackedWitness, mkPackedWitness, decodeDirectionBit,
+    Contracts.bitAnd, Contract.run]
 
 example :
     (verifyPath sampleLeaf sampleSibling0 sampleSibling1 sampleSibling2 sampleSibling3
