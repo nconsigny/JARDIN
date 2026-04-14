@@ -140,7 +140,6 @@ EMERGENCY (device has seed but no FORS+C state):
 | Device registration (Type 1) | 4,041 / 4,138 B | **235K** | **323K** | Once per 95 txs |
 | Compact q=1 (Type 2) | 2,468 / 2,598 B | **117K** | **173K** | Every tx |
 | Compact q=32 (Type 2) | 2,964 / 3,094 B | **132K** | **188K** | |
-| Compact q=58 (Type 2) | 3,380 / 3,510 B | **145K** | **201K** | |
 | Compact q=95 (Type 2) | 3,972 / 4,102 B | **163K** | **219K** | Last before rotation |
 | Re-registration (Type 1) | 4,041 / 4,138 B | **235K** | **289K** | New slot |
 | New slot q=1 (Type 2) | 2,468 / 2,598 B | **117K** | **173K** | Back to compact |
