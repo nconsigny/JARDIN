@@ -32,7 +32,7 @@ C11 Verifier (stateless, shared)       JardinForsCVerifier (compact, shared)
                   └── Type 2: FORS+C compact path (every subsequent tx)
 ```
 
-### FORS+C Parameters (Variant 2)
+### JARDIN (compact path FORS+C) Parameters
 
 | Parameter | Value |
 |-----------|-------|
