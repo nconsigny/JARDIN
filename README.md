@@ -22,15 +22,16 @@ Post-quantum signature verification on Ethereum using SPHINCs- — lightweight h
 2. **Use the lane** — every subsequent transaction uses a compact FORS+C few-time signature at ~49K verify gas, growing by ~500 gas per use
 3. **Lane exhausted?** — after 95 uses, register a new slot. The old lane is done; the new one starts fresh
 
-This gives you **95 cheap transactions for every 1 expensive registration**. A regular user rotating slots every 95 txs pays the stateless price only ~1% of the time.
+This gives you **95 cheap transactions for every 1 expensive registration**. A regular user rotating slots every 95 txs pays the stateless price only ~1% of the time. The stateless C11 fallback is always available — no slot needed, no state needed, just the 24-word seed.
 
 ```
-  ┌─────────────────────────────────────────────────────────────────────┐
-  │  Type 1 (register)         Type 2 (compact, ×95)        Type 1 …  │
-  │  ████████████████           ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓          ████…    │
-  │  C11 stateless             FORS+C few-time               new slot  │
-  │  323K gas, once            117K–163K gas, every tx        289K gas  │
-  └─────────────────────────────────────────────────────────────────────┘
+  Register          JARDÍN (FORS+C compact, x95)            Register
+  ┌──────┐  ┌─────────────────────────────────────────┐  ┌──────┐
+  │ C11  │  │  q=1    q=2    q=3   ...   q=94   q=95 │  │ C11  │  ...
+  │ 323K │  │  117K   117K   118K  ...   163K   163K  │  │ 289K │
+  └──────┘  └─────────────────────────────────────────┘  └──────┘
+                                                    ↕
+                     Stateless C11 fallback: always available (209K gas)
 ```
 
 Both ERC-4337 (hybrid ECDSA + PQ on Sepolia) and EIP-8141 frame transactions (pure PQ on ethrex) are supported. The frame path uses a 67-byte hand-optimized proxy with TXPARAM-aware APPROVE.
