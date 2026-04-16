@@ -14,6 +14,158 @@
 
 Post-quantum signature verification on Ethereum using SPHINCs- — lightweight hash-based signatures derived from SPHINCS+. Supports JARDÍN hybrid accounts (ECDSA + SPHINCs-), stateless ERC-4337 accounts, and native EIP-8141 frame transaction accounts (pure PQ).
 
+---
+
+## Stateless SPHINCs- Architecture (C6–C11)
+
+### Shared Verifier Model
+
+The SPHINCS- verifier is **deployed once** and shared by all accounts. Follows the [ZKnox/Kohaku](https://github.com/ethereum/kohaku/tree/master/examples/pq-account) pattern.
+
+```
+SPHINCs-Asm (deployed once, stateless, pure)
+    ↑ verify(pkSeed, pkRoot, message, sig) → bool
+    │
+    ├── SphincsAccount (4337)       ← keys in storage, rotatable
+    └── FrameAccount (EIP-8141)     ← keys in storage, rotatable
+```
+
+### ERC-4337 Hybrid Account
+
+The account stores keys as immutables and passes them to the shared verifier on each UserOp.
+
+```
+EntryPoint.handleOps()
+    └── SphincsAccount._validateSignature()
+            ├── ECDSA.recover(userOpHash, ecdsaSig) == owner
+            └── sharedVerifier.verify(pkSeed, pkRoot, userOpHash, sphincsSig) == true
+```
+
+### EIP-8141 Frame Transaction (Pure PQ)
+
+The frame account has keys baked into its bytecode — no storage, no calldata overhead for keys. It receives `sigHash + raw_sig`, builds the full ABI call to the shared verifier internally, and calls APPROVE on success.
+
+```
+Frame Transaction (type 0x06)
+    ├── Frame 0 (VERIFY): frame account builds verify(pkSeed, pkRoot, sigHash, sig)
+    │     from embedded keys + calldata → STATICCALLs shared verifier → APPROVE
+    └── Frame 1 (SENDER): ETH transfer / contract call
+```
+No ECDSA — pure post-quantum. Keys are stored in EVM storage (not bytecode) to support future key rotation via `rotateKeys()` — costs ~4K gas per verify but keeps the same account address across key changes.
+
+## Variants
+
+All SPHINCs- variants use WOTS+C / FORS+C (ePrint 2025/2203), n=128-bit, d=2, domain-separated H_msg (160-byte hash).
+
+| Variant | h | a | k | w | l | swn | Sig | sign_h | Verify | Frame | 4337 | sec_14 | sec_16 | sec_18 | sec_20 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| C6 | 24 | 16 | 8 | 16 | 32 | 240 | 3352 B | 5.7M | 156K | 232K | 333K | 128 | 128 | 128 | 128 |
+| **C7** | **24** | **16** | **8** | **8** | **43** | **151** | **3704 B** | **4.3M** | **127K** | **210K** | **318K** | **128** | **128** | **128** | **128** |
+| C8 | 20 | 13 | 12 | 16 | 32 | 162 | 3848 B | 1.4M | 194K | 271K | 377K | 128 | 128 | 128 | 128 |
+| **C9** | **20** | **12** | **11** | **8** | **43** | **208** | **3816 B** | **1.3M** | **117K** | **195K** | **300K** | **128** | **128** | **121.6** | **112.6** |
+| C10 | 18 | 11 | 13 | 8 | 43 | 205 | 4008 B | 609K | 115K | 203K | 308K | 128 | 128 | 118.3 | 104.5 |
+| C11 | 16 | 11 | 13 | 8 | 43 | 203 | 3976 B | 292K | 116K | 202K | 308K | 128 | 118.3 | 104.5 | 86.1 |
+
+- **sign_h**: keccak256 calls during signing (determines signer speed)
+- **sec_N**: security bits at 2^N signatures per key
+- **Verify**: pure verifier gas (Foundry `gasleft()` measurement)
+- **Frame**: total EIP-8141 frame tx gas (ethrex)
+- **4337**: total `handleOps` tx gas (Sepolia)
+
+C7 is the best gas-efficient variant with full 128-bit security at 2^20 signatures. C9 offers 22% lower frame gas but requires key rotation before 2^16 signatures to maintain 128-bit security.
+
+## Key Derivation
+
+### BIP-39 Path (Rust WASM signer)
+
+```
+BIP-39 mnemonic (12 or 24 words)
+    │
+    ├──▶ HMAC-SHA512("sphincs-c6-v1", seed) → pkSeed, sk_seed (quantum-safe)
+    └──▶ BIP-32 m/44'/60'/0'/0/0 → ECDSA address (independent)
+```
+
+SPHINCs- and ECDSA are derived through independent paths — compromising one does not compromise the other.
+
+## Signers
+
+| Signer | Language | C6 Sign Time | BIP-39 |
+|---|---|---|---|
+| `script/signer.py` | Python | ~30s | No |
+| `signer-wasm/` | Rust/WASM | ~3s native | **Yes** |
+
+```bash
+cd signer-wasm && wasm-pack build --release --target web
+cargo test --release -- --ignored  # 9/9 tests
+```
+
+## Deployed Contracts & Transactions
+
+EntryPoint v0.9: `0x433709009B8330FDa32311DF1C2AFA402eD8D009` (Sepolia)
+ 
+### Sepolia (ERC-4337 Hybrid)
+
+| Variant | Verifier | Account | Gas | Tx |
+|---|---|---|---|---|
+| C9 | [`0x18F005...`](https://sepolia.etherscan.io/address/0x18F005EECd41624644AA364bA8857258FEB3C26D) | [`0xA94111...`](https://sepolia.etherscan.io/address/0xA941116763AE386a50133c5af40356c9D93b2978) | 300K | [`0x8366513b...`](https://sepolia.etherscan.io/tx/0x8366513b096ee53dd1cb105363ab21a52267dd966b822b4bb2cf5492abf1550f) |
+
+| C11 | [`0xC25ef5...`](https://sepolia.etherscan.io/address/0xC25ef566884DC36649c3618EEDF66d715427Fd74) | [`0x3C3b0c...`](https://sepolia.etherscan.io/address/0x3C3b0c3498E5ed9350F6fBFA0Ef8dC55f524eA50) | 308K | [`0x9fba169c...`](https://sepolia.etherscan.io/tx/0x9fba169ca76b6712586e44e1a4a2d0407b8b8b9ce767272a193e41a756260b74) |
+
+### ethrex Testnet (EIP-8141 Frame Tx — Pure PQ)
+
+Chain ID: 1729. VERIFY frame reads keys from storage, STATICCALLs shared verifier, APPROVEs. No ECDSA.
+
+| Variant | Verifier | Frame Account | Gas | Verify | Tx |
+|---|---|---|---|---|---|
+| C9 | [`0xc0F115...`](https://demo.eip-8141.ethrex.xyz:8082/address/0xc0F115A19107322cFBf1cDBC7ea011C19EbDB4F8) | [`0xc96304...`](https://demo.eip-8141.ethrex.xyz:8082/address/0xc96304e3c037f81dA488ed9dEa1D8F2a48278a75) | 195K | 117K | [`0x393588ec...`](https://demo.eip-8141.ethrex.xyz:8082/tx/0x393588eceeda4839371f103e16b10c5e2900416d7b194faee8478b6561792813) |
+| C10 | [`0xD0141E...`](https://demo.eip-8141.ethrex.xyz:8082/address/0xD0141E899a65C95a556fE2B27e5982A6DE7fDD7A) | [`0x07882A...`](https://demo.eip-8141.ethrex.xyz:8082/address/0x07882Ae1ecB7429a84f1D53048d35c4bB2056877) | 203K | 122K | [`0x0a2571f8...`](https://demo.eip-8141.ethrex.xyz:8082/tx/0x0a2571f8423ab4ec75e09623773b22ff91794a82d1b3db2d616b8af354730353) |
+| C11 | [`0x315575...`](https://demo.eip-8141.ethrex.xyz:8082/address/0x3155755b79aA083bd953911C92705B7aA82a18F9) | [`0x5bf5b1...`](https://demo.eip-8141.ethrex.xyz:8082/address/0x5bf5b11053e734690269C6B9D438F8C9d48F528A) | 202K | 122K | [`0x053428f5...`](https://demo.eip-8141.ethrex.xyz:8082/tx/0x053428f530521a5c42c4d2406d1cfb8e07baefa0328c0e425045a3ba9317106b) |
+
+## Setup
+
+```bash
+forge build
+pip install eth-account eth-abi requests pycryptodome
+cd signer-wasm && cargo build --release
+```
+
+## Usage
+
+```bash
+# Deploy shared verifier + factory (once)
+forge script script/DeploySepolia.s.sol --rpc-url sepolia --broadcast
+
+# Create account
+python3 script/send_userop.py create \
+  --factory <factory> --ecdsa-key $PRIVATE_KEY --variant c6
+
+# Send hybrid UserOp
+python3 script/send_userop.py send \
+  --account <account> --ecdsa-key $PRIVATE_KEY \
+  --to <recipient> --value 0.001 --variant c6
+
+# Send EIP-8141 frame tx (pure PQ, ethrex)
+python3 script/frame_tx.py send \
+  --account <frame_account> --to <recipient> --value 0.001
+```
+
+## Tests
+
+```bash
+forge test
+cd signer-wasm && cargo test --release -- --ignored
+```
+
+## Formal Verification (Lean 4 / Verity)
+
+### Verified Kernel
+
+This will include a proof with verity 
+
+
+
+
+
 ## JARDÍN — Compact + Stateless Hybrid Account
 
 **JARDÍN** (Judicious Authentication from Random-subset Domain-separated Indexed Nodes) is a post-quantum smart account. It uses the SPINCS- a stateless scheme combined with another verifier which is a simple unbalanced FORS+C tree on the "compact" lane. Together they form a multi lane architecture :
@@ -208,153 +360,7 @@ No on-chain leaf counter. The leaf index q is derived from the signature length.
 | JARDÍN FORS+C Verifier | `0x56d13eb21a625eda8438f55df2c31dc3632034f5` |
 | SPHINCs- C11 Verifier | `0x3155755b79aA083bd953911C92705B7aA82a18F9` |
 
----
 
-## Stateless SPHINCs- Architecture (C6–C11)
-
-### Shared Verifier Model
-
-The SPHINCS- verifier is **deployed once** and shared by all accounts. Follows the [ZKnox/Kohaku](https://github.com/ethereum/kohaku/tree/master/examples/pq-account) pattern.
-
-```
-SPHINCs-Asm (deployed once, stateless, pure)
-    ↑ verify(pkSeed, pkRoot, message, sig) → bool
-    │
-    ├── SphincsAccount (4337)       ← keys in storage, rotatable
-    └── FrameAccount (EIP-8141)     ← keys in storage, rotatable
-```
-
-### ERC-4337 Hybrid Account
-
-The account stores keys as immutables and passes them to the shared verifier on each UserOp.
-
-```
-EntryPoint.handleOps()
-    └── SphincsAccount._validateSignature()
-            ├── ECDSA.recover(userOpHash, ecdsaSig) == owner
-            └── sharedVerifier.verify(pkSeed, pkRoot, userOpHash, sphincsSig) == true
-```
-
-### EIP-8141 Frame Transaction (Pure PQ)
-
-The frame account has keys baked into its bytecode — no storage, no calldata overhead for keys. It receives `sigHash + raw_sig`, builds the full ABI call to the shared verifier internally, and calls APPROVE on success.
-
-```
-Frame Transaction (type 0x06)
-    ├── Frame 0 (VERIFY): frame account builds verify(pkSeed, pkRoot, sigHash, sig)
-    │     from embedded keys + calldata → STATICCALLs shared verifier → APPROVE
-    └── Frame 1 (SENDER): ETH transfer / contract call
-```
-No ECDSA — pure post-quantum. Keys are stored in EVM storage (not bytecode) to support future key rotation via `rotateKeys()` — costs ~4K gas per verify but keeps the same account address across key changes.
-
-## Variants
-
-All SPHINCs- variants use WOTS+C / FORS+C (ePrint 2025/2203), n=128-bit, d=2, domain-separated H_msg (160-byte hash).
-
-| Variant | h | a | k | w | l | swn | Sig | sign_h | Verify | Frame | 4337 | sec_14 | sec_16 | sec_18 | sec_20 |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| C6 | 24 | 16 | 8 | 16 | 32 | 240 | 3352 B | 5.7M | 156K | 232K | 333K | 128 | 128 | 128 | 128 |
-| **C7** | **24** | **16** | **8** | **8** | **43** | **151** | **3704 B** | **4.3M** | **127K** | **210K** | **318K** | **128** | **128** | **128** | **128** |
-| C8 | 20 | 13 | 12 | 16 | 32 | 162 | 3848 B | 1.4M | 194K | 271K | 377K | 128 | 128 | 128 | 128 |
-| **C9** | **20** | **12** | **11** | **8** | **43** | **208** | **3816 B** | **1.3M** | **117K** | **195K** | **300K** | **128** | **128** | **121.6** | **112.6** |
-| C10 | 18 | 11 | 13 | 8 | 43 | 205 | 4008 B | 609K | 115K | 203K | 308K | 128 | 128 | 118.3 | 104.5 |
-| C11 | 16 | 11 | 13 | 8 | 43 | 203 | 3976 B | 292K | 116K | 202K | 308K | 128 | 118.3 | 104.5 | 86.1 |
-
-- **sign_h**: keccak256 calls during signing (determines signer speed)
-- **sec_N**: security bits at 2^N signatures per key
-- **Verify**: pure verifier gas (Foundry `gasleft()` measurement)
-- **Frame**: total EIP-8141 frame tx gas (ethrex)
-- **4337**: total `handleOps` tx gas (Sepolia)
-
-C7 is the best gas-efficient variant with full 128-bit security at 2^20 signatures. C9 offers 22% lower frame gas but requires key rotation before 2^16 signatures to maintain 128-bit security.
-
-## Key Derivation
-
-### BIP-39 Path (Rust WASM signer)
-
-```
-BIP-39 mnemonic (12 or 24 words)
-    │
-    ├──▶ HMAC-SHA512("sphincs-c6-v1", seed) → pkSeed, sk_seed (quantum-safe)
-    └──▶ BIP-32 m/44'/60'/0'/0/0 → ECDSA address (independent)
-```
-
-SPHINCs- and ECDSA are derived through independent paths — compromising one does not compromise the other.
-
-## Signers
-
-| Signer | Language | C6 Sign Time | BIP-39 |
-|---|---|---|---|
-| `script/signer.py` | Python | ~30s | No |
-| `signer-wasm/` | Rust/WASM | ~3s native | **Yes** |
-
-```bash
-cd signer-wasm && wasm-pack build --release --target web
-cargo test --release -- --ignored  # 9/9 tests
-```
-
-## Deployed Contracts & Transactions
-
-EntryPoint v0.9: `0x433709009B8330FDa32311DF1C2AFA402eD8D009` (Sepolia)
- 
-### Sepolia (ERC-4337 Hybrid)
-
-| Variant | Verifier | Account | Gas | Tx |
-|---|---|---|---|---|
-| C9 | [`0x18F005...`](https://sepolia.etherscan.io/address/0x18F005EECd41624644AA364bA8857258FEB3C26D) | [`0xA94111...`](https://sepolia.etherscan.io/address/0xA941116763AE386a50133c5af40356c9D93b2978) | 300K | [`0x8366513b...`](https://sepolia.etherscan.io/tx/0x8366513b096ee53dd1cb105363ab21a52267dd966b822b4bb2cf5492abf1550f) |
-
-| C11 | [`0xC25ef5...`](https://sepolia.etherscan.io/address/0xC25ef566884DC36649c3618EEDF66d715427Fd74) | [`0x3C3b0c...`](https://sepolia.etherscan.io/address/0x3C3b0c3498E5ed9350F6fBFA0Ef8dC55f524eA50) | 308K | [`0x9fba169c...`](https://sepolia.etherscan.io/tx/0x9fba169ca76b6712586e44e1a4a2d0407b8b8b9ce767272a193e41a756260b74) |
-
-### ethrex Testnet (EIP-8141 Frame Tx — Pure PQ)
-
-Chain ID: 1729. VERIFY frame reads keys from storage, STATICCALLs shared verifier, APPROVEs. No ECDSA.
-
-| Variant | Verifier | Frame Account | Gas | Verify | Tx |
-|---|---|---|---|---|---|
-| C9 | [`0xc0F115...`](https://demo.eip-8141.ethrex.xyz:8082/address/0xc0F115A19107322cFBf1cDBC7ea011C19EbDB4F8) | [`0xc96304...`](https://demo.eip-8141.ethrex.xyz:8082/address/0xc96304e3c037f81dA488ed9dEa1D8F2a48278a75) | 195K | 117K | [`0x393588ec...`](https://demo.eip-8141.ethrex.xyz:8082/tx/0x393588eceeda4839371f103e16b10c5e2900416d7b194faee8478b6561792813) |
-| C10 | [`0xD0141E...`](https://demo.eip-8141.ethrex.xyz:8082/address/0xD0141E899a65C95a556fE2B27e5982A6DE7fDD7A) | [`0x07882A...`](https://demo.eip-8141.ethrex.xyz:8082/address/0x07882Ae1ecB7429a84f1D53048d35c4bB2056877) | 203K | 122K | [`0x0a2571f8...`](https://demo.eip-8141.ethrex.xyz:8082/tx/0x0a2571f8423ab4ec75e09623773b22ff91794a82d1b3db2d616b8af354730353) |
-| C11 | [`0x315575...`](https://demo.eip-8141.ethrex.xyz:8082/address/0x3155755b79aA083bd953911C92705B7aA82a18F9) | [`0x5bf5b1...`](https://demo.eip-8141.ethrex.xyz:8082/address/0x5bf5b11053e734690269C6B9D438F8C9d48F528A) | 202K | 122K | [`0x053428f5...`](https://demo.eip-8141.ethrex.xyz:8082/tx/0x053428f530521a5c42c4d2406d1cfb8e07baefa0328c0e425045a3ba9317106b) |
-
-## Setup
-
-```bash
-forge build
-pip install eth-account eth-abi requests pycryptodome
-cd signer-wasm && cargo build --release
-```
-
-## Usage
-
-```bash
-# Deploy shared verifier + factory (once)
-forge script script/DeploySepolia.s.sol --rpc-url sepolia --broadcast
-
-# Create account
-python3 script/send_userop.py create \
-  --factory <factory> --ecdsa-key $PRIVATE_KEY --variant c6
-
-# Send hybrid UserOp
-python3 script/send_userop.py send \
-  --account <account> --ecdsa-key $PRIVATE_KEY \
-  --to <recipient> --value 0.001 --variant c6
-
-# Send EIP-8141 frame tx (pure PQ, ethrex)
-python3 script/frame_tx.py send \
-  --account <frame_account> --to <recipient> --value 0.001
-```
-
-## Tests
-
-```bash
-forge test
-cd signer-wasm && cargo test --release -- --ignored
-```
-
-## Formal Verification (Lean 4 / Verity)
-
-### Verified Kernel
-
-This will include a proof with verity 
 
 ## References
 
