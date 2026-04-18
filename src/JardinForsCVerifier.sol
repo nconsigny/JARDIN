@@ -1,15 +1,22 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
 
-/// @title JardinForsCVerifier — FORS+C verifier with balanced h=7 Merkle tree
+/// @title JardinForsCVerifier — variable-height FORS+C verifier
 /// @dev JARDÍN compact path variant 2: k=26, a=5, n=16 bytes (128-bit).
-///      Verifies FORS+C signature and walks a balanced Merkle tree of height
-///      h=7 (Q_MAX=128) up to pkRoot. Auth path is a constant 7 nodes.
-///      H_msg: 192-byte domain-separated hash (seed||root||R||msg||counter||domain).
+///      Verifies FORS+C signature and walks a balanced Merkle tree of
+///      height h ∈ [2, 8] up to pkRoot. h is inferred from the signature
+///      length (no extra wire byte):
 ///
-///      Signature layout (constant 2565 bytes):
+///          h = (sig.length - 2453) / 16
+///          valid iff 2 ≤ h ≤ 8 and (sig.length - 2453) % 16 == 0
+///
+///      Signature layout:
 ///        R(32) | counter(4) | 25 × (secret 16B + auth 5×16B) | lastRoot(16)
-///        | q(1) | merkleAuth(7×16)
+///        | q(1) | merkleAuth(h × 16)
+///
+///      For h=7 the behaviour and gas profile match the earlier fixed-h
+///      verifier byte-for-byte (all loop bounds resolve to identical
+///      constants).
 contract JardinForsCVerifier {
 
     function verifyForsC(
@@ -21,9 +28,26 @@ contract JardinForsCVerifier {
         assembly ("memory-safe") {
             let N_MASK := 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF00000000000000000000000000000000
 
-            // ── Validate signature length (constant) ──
-            // 32 + 4 + 25*96 + 16 + 1 + 7*16 = 2565
-            if iszero(eq(sig.length, 2565)) {
+            // ── Infer h from sig length, validate shape ──
+            //   sig.length == 2452 (body) + 1 (q) + 16 * h
+            //   → h = (sig.length - 2453) / 16, must be in [2, 8]
+            if lt(sig.length, 2485) {
+                mstore(0x00, 0x08c379a000000000000000000000000000000000000000000000000000000000)
+                mstore(0x04, 0x20)
+                mstore(0x24, 18)
+                mstore(0x44, "Invalid sig length")
+                revert(0x00, 0x64)
+            }
+            let merkleBytes := sub(sig.length, 2453)
+            if and(merkleBytes, 15) {
+                mstore(0x00, 0x08c379a000000000000000000000000000000000000000000000000000000000)
+                mstore(0x04, 0x20)
+                mstore(0x24, 18)
+                mstore(0x44, "Invalid sig length")
+                revert(0x00, 0x64)
+            }
+            let hh := shr(4, merkleBytes)
+            if gt(hh, 8) {
                 mstore(0x00, 0x08c379a000000000000000000000000000000000000000000000000000000000)
                 mstore(0x04, 0x20)
                 mstore(0x24, 18)
@@ -37,7 +61,8 @@ contract JardinForsCVerifier {
 
             // ── Read explicit 1-byte q at offset 2452 (after FORSC_BODY) ──
             let q := shr(248, calldataload(add(sigBase, 2452)))
-            if or(iszero(q), gt(q, 128)) { revert(0, 0) }
+            // q ∈ [1, 2^h]; shl(hh, 1) = 2^h ≤ 256 for h ≤ 8, fits in a byte.
+            if or(iszero(q), gt(q, shl(hh, 1))) { revert(0, 0) }
             let leafIdx := sub(q, 1)
 
             // ── H_msg (192 bytes): seed || root || R || message || counter || domain ──
@@ -105,16 +130,17 @@ contract JardinForsCVerifier {
             }
             let forsPk := and(keccak256(0x00, 0x380), N_MASK)
 
-            // ── Balanced Merkle walk (h=7) ──
+            // ── Balanced Merkle walk (h levels, runtime-determined) ──
             // Auth path at sigBase + 2453 (after 2452-byte body + 1 byte q)
             // Type=16 JARDIN_MERKLE, x=level, y=parentIndex, ci=0, kp=0
             let authStart := add(sigBase, 2453)
             let adrsMerkle := shl(128, 16)
             let merkleNode := forsPk
+            let hminus1 := sub(hh, 1)
 
-            for { let j := 0 } lt(j, 7) { j := add(j, 1) } {
+            for { let j := 0 } lt(j, hh) { j := add(j, 1) } {
                 let sibling := and(calldataload(add(authStart, shl(4, j))), N_MASK)
-                let level := sub(6, j)                 // h - 1 - j
+                let level := sub(hminus1, j)
                 let parentIdx := shr(add(j, 1), leafIdx)
                 mstore(0x20, or(adrsMerkle, or(shl(32, level), parentIdx)))
                 // L/R ordering from bit j of leafIdx: 0 → node left, 1 → node right

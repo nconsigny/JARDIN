@@ -46,9 +46,10 @@ CHAIN_ID = 11155111
 BUNDLER_URL_TEMPLATE = "https://api.candide.dev/public/v3/{chain}"
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-STATE_FILE = os.path.join(PROJECT_ROOT, "script", ".jardinero_state.json")
-ADDR_FILE  = os.path.join(PROJECT_ROOT, "script", ".jardinero_addresses.json")
-ENV_FILE   = os.path.join(PROJECT_ROOT, ".env")
+STATE_FILE    = os.path.join(PROJECT_ROOT, "script", ".jardinero_state.json")
+STATE_VH_FILE = os.path.join(PROJECT_ROOT, "script", ".jardinero_vh_state.json")
+ADDR_FILE     = os.path.join(PROJECT_ROOT, "script", ".jardinero_addresses.json")
+ENV_FILE      = os.path.join(PROJECT_ROOT, ".env")
 
 # ============================================================
 #  Env + cast
@@ -261,14 +262,27 @@ def gen_t0_keys():
     pk_root = t0_build_root(pk_seed, sk_seed)
     return sk_seed, sk_prf, pk_seed, pk_root
 
-def gen_sub_keys(slot_gen):
-    """Derive a FORS+C sub-key from master + slot_gen, build its balanced tree."""
+def gen_sub_keys(slot_gen, h=None):
+    """Derive a FORS+C sub-key from master + slot_gen, build its balanced tree.
+
+    When h is omitted, uses the signer's default (Q_MAX=128, h=7). Distinct
+    slot_gen / h pairs yield distinct sub-keys (h is mixed into the entropy
+    tag so an h=5 slot can't collide with an h=7 slot of the same gen).
+    """
     master = master_sk_from_env()
-    sub_entropy = keccak256(master + b"jardinero_sub_" + str(slot_gen).encode())
+    tag = b"jardinero_sub_" + str(slot_gen).encode()
+    if h is not None:
+        tag += b"_h" + str(h).encode()
+    sub_entropy = keccak256(master + tag)
     sub_pk_seed = keccak256(b"jardinero_pk_seed" + to_b32(sub_entropy)) & N_MASK
     sub_sk_seed = keccak256(b"jardinero_sk_seed" + to_b32(sub_entropy))
-    eprint(f"  Building FORS+C balanced tree (slot_gen={slot_gen}, Q_MAX={Q_MAX})...")
-    levels, sub_pk_root = build_balanced_tree(sub_pk_seed, sub_sk_seed)
+    build_h = h if h is not None else 7
+    q_max = 1 << build_h
+    eprint(f"  Building FORS+C balanced tree (slot_gen={slot_gen}, h={build_h}, Q_MAX={q_max})...")
+    if h is None:
+        levels, sub_pk_root = build_balanced_tree(sub_pk_seed, sub_sk_seed)
+    else:
+        levels, sub_pk_root = build_balanced_tree(sub_pk_seed, sub_sk_seed, h)
     return sub_pk_seed, sub_sk_seed, sub_pk_root, levels
 
 # ============================================================
@@ -439,9 +453,122 @@ def cmd_cycle():
 #  Entry
 # ============================================================
 
+def cmd_deploy_vh():
+    """Deploy an account via the variable-h factory. Writes state to STATE_VH_FILE."""
+    eprint("=== Deploying JARDINERO (T0, Vh) Account ===")
+    addr = load_addresses()
+    factory = addr["factoryVh"]
+    env = load_env()
+    ecdsa = Account.from_key(bytes.fromhex(env["PRIVATE_KEY"].replace("0x", "")))
+    eprint(f"  ECDSA owner: {ecdsa.address}")
+    eprint(f"  factoryVh:   {factory}")
+
+    _, _, t0_pk_seed, t0_pk_root = gen_t0_keys()
+    eprint(f"  t0PkSeed: {to_hex(t0_pk_seed)[:18]}...")
+    eprint(f"  t0PkRoot: {to_hex(t0_pk_root)[:18]}...")
+
+    cast_send(factory, "createAccount(address,bytes32,bytes32)",
+              ecdsa.address, to_hex(t0_pk_seed), to_hex(t0_pk_root))
+
+    account_addr = cast(
+        "call", factory,
+        "getAddress(address,bytes32,bytes32)(address)",
+        ecdsa.address, to_hex(t0_pk_seed), to_hex(t0_pk_root),
+        "--rpc-url", env["SEPOLIA_RPC_URL"])
+    account_addr = account_addr.strip() if account_addr else None
+    if not account_addr:
+        eprint("  Failed to read account address"); sys.exit(1)
+    eprint(f"  Account (Vh): {account_addr}")
+
+    eprint("  Funding account with 0.05 ETH...")
+    cast_send(account_addr, "--value", "50000000000000000")
+
+    state = {
+        "account": account_addr,
+        "t0_pk_seed": to_hex(t0_pk_seed),
+        "t0_pk_root": to_hex(t0_pk_root),
+        "slots": [],  # list of {slot_gen, h, sub_pk_seed, sub_pk_root, next_q}
+    }
+    with open(STATE_VH_FILE, "w") as f:
+        json.dump(state, f, indent=2)
+    eprint(f"  State → {STATE_VH_FILE}")
+    print(f"JARDINERO Vh Account: {account_addr}")
+    return state
+
+def cmd_cycle_vh(h_list=(5, 7, 8)):
+    """Mixed-h cycle: 3 Type 1 registrations (at h=5, h=7, h=8 by default)
+    against the variable-h verifier, then one Type 2 on each slot."""
+    eprint(f"=== JARDINERO Vh Cycle: 3× Type 1 at h={list(h_list)} + 3× Type 2 ===")
+    if not os.path.exists(STATE_VH_FILE):
+        cmd_deploy_vh()
+        time.sleep(8)
+
+    with open(STATE_VH_FILE) as f:
+        state = json.load(f)
+    account = state["account"]
+    t0_sk_seed, t0_sk_prf, t0_pk_seed, t0_pk_root = gen_t0_keys()
+    assert to_hex(t0_pk_root) == state["t0_pk_root"], "T0 root mismatch vs state"
+
+    uop_nonce = _nonce_of(account)
+    eprint(f"  Initial nonce: {uop_nonce}")
+
+    registered = []  # [(h, sub_pk_seed, sub_sk_seed, sub_pk_root, levels)]
+    results = []
+
+    for i, h in enumerate(h_list):
+        slot_gen = i + 1
+        eprint(f"\n[Type 1 #{slot_gen}] Register slot h={h}")
+        sub_pk_seed, sub_sk_seed, sub_pk_root, levels = gen_sub_keys(slot_gen, h=h)
+        uop = _build_type1_sig(account, uop_nonce,
+                               t0_sk_seed, t0_sk_prf, t0_pk_seed, t0_pk_root,
+                               sub_pk_seed, sub_pk_root, sig_counter=slot_gen)
+        eprint(f"  Submitting via Candide (sig bytes = {len(bytes.fromhex(uop['signature'][2:]))})")
+        ok, cost, tx = submit_via_bundler(uop)
+        tag = "OK" if ok else "FAIL"
+        print(f"  Type1 slot_gen={slot_gen} h={h}  {tag}  cost={cost} wei  tx={tx}", flush=True)
+        results.append(("Type1", slot_gen, h, ok, cost, tx))
+        if ok:
+            uop_nonce += 1
+            registered.append((h, sub_pk_seed, sub_sk_seed, sub_pk_root, levels))
+            state["slots"].append({
+                "slot_gen": slot_gen, "h": h,
+                "sub_pk_seed": to_hex(sub_pk_seed), "sub_pk_root": to_hex(sub_pk_root),
+                "tx": tx,
+            })
+            with open(STATE_VH_FILE, "w") as f:
+                json.dump(state, f, indent=2)
+        else:
+            eprint("  Type 1 failed — abort."); return
+
+    # One Type 2 at q=1 on each freshly-registered slot.
+    for (h, sub_pk_seed, sub_sk_seed, sub_pk_root, levels) in registered:
+        eprint(f"\n[Type 2] Compact FORS+C on slot h={h}, q=1")
+        uop = _build_type2_sig(account, uop_nonce,
+                               sub_pk_seed, sub_sk_seed, sub_pk_root, levels, 1)
+        eprint(f"  Submitting via Candide (sig bytes = {len(bytes.fromhex(uop['signature'][2:]))})")
+        ok, cost, tx = submit_via_bundler(uop)
+        tag = "OK" if ok else "FAIL"
+        print(f"  Type2 h={h} q=1  {tag}  cost={cost} wei  tx={tx}", flush=True)
+        results.append(("Type2", 1, h, ok, cost, tx))
+        if ok:
+            uop_nonce += 1
+
+    print("\n" + "=" * 60)
+    t1 = [r for r in results if r[0] == "Type1"]
+    t2 = [r for r in results if r[0] == "Type2"]
+    t1_ok = [r[4] for r in t1 if r[3]]
+    t2_ok = [r[4] for r in t2 if r[3]]
+    print(f"Type 1: {sum(1 for r in t1 if r[3])}/{len(t1)} ok   "
+          f"actualGasCost avg={sum(t1_ok)//len(t1_ok) if t1_ok else 0} wei")
+    print(f"Type 2: {sum(1 for r in t2 if r[3])}/{len(t2)} ok   "
+          f"actualGasCost avg={sum(t2_ok)//len(t2_ok) if t2_ok else 0} wei")
+    for kind, key, h, ok, cost, tx in results:
+        tag = "OK" if ok else "FAIL"
+        print(f"  {kind} key={key} h={h}  {tag}  tx={tx}")
+
 def main():
     if len(sys.argv) < 2:
-        print("Usage: python3 jardin_t0_userop.py [deploy|cycle|save-addresses <t0> <forsc> <factory>]")
+        print("Usage: python3 jardin_t0_userop.py [deploy|cycle|deploy-vh|cycle-vh|save-addresses <t0> <forsc> <factory>]")
         sys.exit(1)
     cmd = sys.argv[1]
     if cmd == "save-addresses":
@@ -453,6 +580,10 @@ def main():
         cmd_deploy()
     elif cmd == "cycle":
         cmd_cycle()
+    elif cmd == "deploy-vh":
+        cmd_deploy_vh()
+    elif cmd == "cycle-vh":
+        cmd_cycle_vh()
     else:
         print(f"Unknown command: {cmd}")
         sys.exit(1)

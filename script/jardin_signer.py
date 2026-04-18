@@ -26,17 +26,22 @@ K = 26        # FORS trees
 A = 5         # FORS tree height (2^5 = 32 leaves per tree)
 A_MASK = (1 << A) - 1  # 0x1F
 
-MERKLE_H = 7          # balanced tree height
-Q_MAX = 1 << MERKLE_H # 128
+MERKLE_H = 7          # default balanced tree height (h=7 ⇒ Q_MAX=128)
+Q_MAX = 1 << MERKLE_H # 128 (default; override per-call with h)
+MIN_H = 2
+MAX_H = 8
 
-# FORS+C body (unchanged):
+# FORS+C body (h-independent):
 #   R(32) + counter(4) + (K-1)*(secret N + auth A*N) + lastRoot(N)
 #   = 32 + 4 + 25*(16 + 5*16) + 16 = 2452
 FORSC_BODY = 32 + 4 + (K - 1) * (N + A * N) + N  # 2452
 
-# Full Type 2 FORS+C signature passed to verifier:
-#   FORSC_BODY + q(1) + MERKLE_H * N = 2452 + 1 + 112 = 2565
-FORSC_SIG_LEN = FORSC_BODY + 1 + MERKLE_H * N
+def fors_sig_len(h=MERKLE_H):
+    """Total Type-2 sig length for a given Merkle height h."""
+    return FORSC_BODY + 1 + h * N
+
+# Legacy constant for h=7 call sites that haven't been migrated.
+FORSC_SIG_LEN = fors_sig_len(MERKLE_H)
 
 ADRS_FORS_TREE = 3
 ADRS_FORS_ROOTS = 4
@@ -174,20 +179,23 @@ def compute_forsc_pk(seed, sk_seed, q):
 #  Balanced Merkle Tree (h=7, 128 leaves)
 # ============================================================
 
-def build_balanced_tree(seed, sk_seed):
-    """Build balanced Merkle tree of Q_MAX=2^h FORS+C public keys.
+def build_balanced_tree(seed, sk_seed, h=MERKLE_H):
+    """Build balanced Merkle tree of 2^h FORS+C public keys.
 
     Returns (levels, root) where levels[L] is the list of nodes at level L.
-    levels[MERKLE_H] = FORS+C public keys (leaves), levels[0] = [root].
+    levels[h] = FORS+C public keys (leaves), levels[0] = [root].
     """
+    if not (MIN_H <= h <= MAX_H):
+        raise ValueError(f"h={h} outside [{MIN_H}, {MAX_H}]")
+    q_max = 1 << h
     fors_pks = []
-    for q in range(1, Q_MAX + 1):
-        eprint(f"  FORS+C PK q={q}/{Q_MAX}...")
+    for q in range(1, q_max + 1):
+        eprint(f"  FORS+C PK q={q}/{q_max}...")
         fors_pks.append(compute_forsc_pk(seed, sk_seed, q))
 
-    levels = [None] * (MERKLE_H + 1)
-    levels[MERKLE_H] = fors_pks
-    for level in range(MERKLE_H - 1, -1, -1):
+    levels = [None] * (h + 1)
+    levels[h] = fors_pks
+    for level in range(h - 1, -1, -1):
         layer = []
         child_layer = levels[level + 1]
         for i in range(1 << level):
@@ -200,15 +208,21 @@ def build_balanced_tree(seed, sk_seed):
     root = levels[0][0]
     return levels, root
 
-def get_balanced_auth_path(levels, q):
-    """Auth path for leaf q (1-indexed). Returns MERKLE_H=7 sibling nodes."""
+def get_balanced_auth_path(levels, q, h=None):
+    """Auth path for leaf q (1-indexed). Returns h sibling nodes.
+
+    If h is omitted, it's inferred as len(levels)-1 (consistent with
+    build_balanced_tree's output).
+    """
+    if h is None:
+        h = len(levels) - 1
     leaf_idx = q - 1
     auth = []
     idx = leaf_idx
-    for j in range(MERKLE_H):
-        # At step j we combine nodes at child level (MERKLE_H - j);
-        # sibling is at levels[MERKLE_H - j][idx ^ 1].
-        child_level = MERKLE_H - j
+    for j in range(h):
+        # At step j we combine nodes at child level (h - j);
+        # sibling is at levels[h - j][idx ^ 1].
+        child_level = h - j
         auth.append(levels[child_level][idx ^ 1])
         idx >>= 1
     return auth
@@ -252,16 +266,22 @@ def jardin_grind_and_sign(seed, sk_seed, root, message, q):
     assert len(sig) == FORSC_BODY, f"{len(sig)} != {FORSC_BODY}"
     return sig, R, counter, digest
 
-def jardin_sign(seed, sk_seed, root, levels, message, q):
-    """Produce the full FORS+C compact signature (constant FORSC_SIG_LEN bytes)."""
+def jardin_sign(seed, sk_seed, root, levels, message, q, h=None):
+    """Produce the full FORS+C compact signature. Length = 2452 + 1 + h*N.
+
+    If h is omitted it's inferred from levels (len(levels)-1).
+    """
+    if h is None:
+        h = len(levels) - 1
     fors_body, R, counter, digest = jardin_grind_and_sign(
         seed, sk_seed, root, message, q
     )
-    auth = get_balanced_auth_path(levels, q)
+    auth = get_balanced_auth_path(levels, q, h)
     sig = fors_body + bytes([q & 0xFF])
     for node in auth:
         sig += to_b32(node)[:N]
-    assert len(sig) == FORSC_SIG_LEN, f"{len(sig)} != {FORSC_SIG_LEN}"
+    expected = fors_sig_len(h)
+    assert len(sig) == expected, f"{len(sig)} != {expected}"
     return sig, R, counter, digest
 
 # ============================================================
@@ -269,13 +289,20 @@ def jardin_sign(seed, sk_seed, root, levels, message, q):
 # ============================================================
 
 def jardin_verify_locally(seed, root, message, sig):
-    """Mirror the on-chain verifier for sanity checking."""
-    assert len(sig) == FORSC_SIG_LEN, f"{len(sig)} != {FORSC_SIG_LEN}"
+    """Mirror the on-chain verifier for sanity checking.
+
+    Infers h from sig length (same formula as the Solidity verifier).
+    """
+    merkle_bytes = len(sig) - FORSC_BODY - 1
+    assert merkle_bytes % N == 0 and merkle_bytes > 0, f"unaligned sig len {len(sig)}"
+    h = merkle_bytes // N
+    assert MIN_H <= h <= MAX_H, f"h={h} outside [{MIN_H}, {MAX_H}]"
 
     R = int.from_bytes(sig[0:32], "big")
     counter = int.from_bytes(sig[32:36], "big")
     q = sig[FORSC_BODY]
-    assert 1 <= q <= Q_MAX, f"q out of range: {q}"
+    q_max = 1 << h
+    assert 1 <= q <= q_max, f"q out of range: {q} (h={h}, q_max={q_max})"
 
     digest = jardin_h_msg(seed, root, R, message, counter)
     assert (digest >> ((K - 1) * A)) & A_MASK == 0
@@ -288,11 +315,11 @@ def jardin_verify_locally(seed, root, message, sig):
         leaf_y = (t << A) | indices[t]
         node = th(seed, make_adrs(0, 0, ADRS_FORS_TREE, 0, q, 0, leaf_y), secret)
         path_idx = indices[t]
-        for h in range(A):
+        for hh in range(A):
             sib = int.from_bytes(sig[off:off + N], "big") << 128; off += N
             pi = path_idx >> 1
-            parent_y = (t << (A - h - 1)) | pi
-            adrs = make_adrs(0, 0, ADRS_FORS_TREE, 0, q, h + 1, parent_y)
+            parent_y = (t << (A - hh - 1)) | pi
+            adrs = make_adrs(0, 0, ADRS_FORS_TREE, 0, q, hh + 1, parent_y)
             node = th_pair(seed, adrs, node, sib) if path_idx & 1 == 0 else th_pair(seed, adrs, sib, node)
             path_idx = pi
         tree_roots.append(node)
@@ -301,13 +328,13 @@ def jardin_verify_locally(seed, root, message, sig):
     tree_roots.append(th(seed, make_adrs(0, 0, ADRS_FORS_TREE, 0, q, 0, (K - 1) << A), lr))
     fors_pk = th_multi(seed, make_adrs(0, 0, ADRS_FORS_ROOTS, 0, q, 0, 0), tree_roots)
 
-    # Balanced Merkle walk
+    # Balanced Merkle walk over h levels
     leaf_idx = q - 1
     auth_off = FORSC_BODY + 1
     node = fors_pk
-    for j in range(MERKLE_H):
+    for j in range(h):
         sibling = int.from_bytes(sig[auth_off + j * N:auth_off + (j + 1) * N], "big") << 128
-        level = MERKLE_H - 1 - j
+        level = h - 1 - j
         parent_idx = leaf_idx >> (j + 1)
         adrs = make_adrs(0, 0, ADRS_JARDIN_MERKLE, 0, 0, level, parent_idx)
         if (leaf_idx >> j) & 1 == 0:
@@ -316,7 +343,7 @@ def jardin_verify_locally(seed, root, message, sig):
             node = th_pair(seed, adrs, sibling, node)
 
     assert node == root, f"Root mismatch: {hex(node)} != {hex(root)}"
-    eprint("  Local verification OK")
+    eprint(f"  Local verification OK (h={h})")
 
 # ============================================================
 #  Utility & Main
@@ -332,22 +359,26 @@ def abi_encode(seed, root, sig):
 
 def main():
     if len(sys.argv) < 2:
-        eprint("Usage: python3 jardin_signer.py <message_hex> [q_leaf]")
+        eprint("Usage: python3 jardin_signer.py <message_hex> [q_leaf] [h]")
         sys.exit(1)
     msg_hex = sys.argv[1].replace("0x", "")
     q_leaf = int(sys.argv[2]) if len(sys.argv) > 2 else 1
+    h      = int(sys.argv[3]) if len(sys.argv) > 3 else MERKLE_H
+    if not (MIN_H <= h <= MAX_H):
+        eprint(f"h={h} outside [{MIN_H}, {MAX_H}]"); sys.exit(1)
+    q_max = 1 << h
     message_int = int(msg_hex, 16)
 
     t0 = time.time()
     pk_seed, sk_seed = jardin_derive_keys(message_int)
     eprint(f"  pkSeed = {hex(pk_seed)[:18]}...")
-    eprint(f"  Building balanced tree (h={MERKLE_H}, Q_MAX={Q_MAX})...")
-    levels, pk_root = build_balanced_tree(pk_seed, sk_seed)
+    eprint(f"  Building balanced tree (h={h}, Q_MAX={q_max})...")
+    levels, pk_root = build_balanced_tree(pk_seed, sk_seed, h)
     eprint(f"  pkRoot = {hex(pk_root)[:18]}...")
 
-    assert 1 <= q_leaf <= Q_MAX
+    assert 1 <= q_leaf <= q_max
     eprint(f"  Signing at q={q_leaf}...")
-    sig, _, _, _ = jardin_sign(pk_seed, sk_seed, pk_root, levels, message_int, q_leaf)
+    sig, _, _, _ = jardin_sign(pk_seed, sk_seed, pk_root, levels, message_int, q_leaf, h)
     jardin_verify_locally(pk_seed, pk_root, message_int, sig)
 
     eprint(f"  Signature: {len(sig)} bytes (constant)")

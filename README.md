@@ -448,12 +448,30 @@ Signature layout (what the verifier receives):
 | Type | Role | Payload |
 |---|---|---|
 | `0x01` | **ECDSA + T0** (primary slot registration) | `[ecdsa 65][subSeed 16][subRoot 16][T0 sig 8,220]` = 8,317 B |
-| `0x02` | ECDSA + FORS+C (compact, requires registered slot) | `[ecdsa 65][subSeed 16][subRoot 16][FORS+C sig 2,565]` = 2,662 B |
+| `0x02` | ECDSA + FORS+C (compact, requires registered slot) | `[ecdsa 65][subSeed 16][subRoot 16][FORS+C sig]` = 2,598 B + 16·h |
 | `0x03` | ECDSA + C11 (optional recovery — if attached) | `[ecdsa 65][C11 sig 3,976]` = 4,041 B |
 
 At deploy time the account carries `t0PkSeed / t0PkRoot` (the 4-leaf XMSS root)
 and `forscVerifier` (immutable). `c11Verifier` starts at `address(0)`; the user
 attaches it later if desired. The slot-registration path never requires C11.
+
+### Variable-height FORS+C
+
+The FORS+C verifier accepts Type 2 sigs from slots with any outer Merkle
+height `h ∈ [2, 8]` (Q_MAX = 2^h = 4 … 256). `h` is inferred from the
+signature length with no extra wire byte:
+
+```
+h = (sig.length − 2453) / 16          (valid iff 2 ≤ h ≤ 8 and 16-aligned)
+sig.length = 2452 (FORS+C body) + 1 (q) + 16·h (auth path)
+```
+
+`forscVerifier` is immutable on `JardinAccount`, so already-deployed accounts
+(pre-variable-h) remain pinned to h=7. **New accounts created through the
+variable-h factory (see "Deployed" below) can register slots at any
+supported h.** This lets a hardware signer use a fast h=5 slot (Q_MAX=32)
+for first-time onboarding and switch to h=7 later without swapping verifiers
+or accounts.
 
 ## Measured Gas — 3×3 cycle on both chains
 
@@ -480,14 +498,26 @@ loop, no prefund dance, no account ↔ EntryPoint bookkeeping.
 
 ## Deployed (JARDINERO)
 
-**Sepolia (chain 11155111)**
+**Sepolia (chain 11155111) — fixed-h=7 (historical)**
 
 | Contract | Address |
 |---|---|
 | T0 Verifier | [`0x188c4Ed4…`](https://sepolia.etherscan.io/address/0x188c4Ed44e5e26090D9A46CE2D5c9bD153AD5767) |
-| FORS+C Verifier | [`0x4833624a…`](https://sepolia.etherscan.io/address/0x4833624a57E59D2f888890ae6B776933c5FF6C68) |
+| FORS+C Verifier (fixed h=7) | [`0x4833624a…`](https://sepolia.etherscan.io/address/0x4833624a57E59D2f888890ae6B776933c5FF6C68) |
 | JARDINERO Factory | [`0xA9a71887…`](https://sepolia.etherscan.io/address/0xA9a718873E092aAE8170534eeb1ee3615F9E95F0) |
 | JARDINERO Account (sample) | [`0xB2b3e120…`](https://sepolia.etherscan.io/address/0xB2b3e12093d3Dd355b946F47bdFb08CA1F35B3cd) |
+
+**Sepolia — variable-h (current)**
+
+| Contract | Address |
+|---|---|
+| FORS+C Verifier (variable h ∈ [2,8]) | [`0xd12b2c6a…`](https://sepolia.etherscan.io/address/0xd12b2c6ac8992c22c863e8ef0982f33a3119366d) |
+| JARDINERO Factory (Vh) | [`0xf21c16a2…`](https://sepolia.etherscan.io/address/0xf21c16a2bcc91fba0a91a06caf9697120429fecd) |
+| JARDINERO Account (Vh sample) | [`0x2D82c7B5…`](https://sepolia.etherscan.io/address/0x2D82c7B5b19bC7DA4CdCD1acFC4dC448245a28B0) |
+
+Mixed-h cycle on Sepolia via Candide (3 Type 1 registrations at h=5, 7, 8 + 3 Type 2 on each, 6/6 OK):
+- Type 1 h=5 → [`0xe0fe589b…`](https://sepolia.etherscan.io/tx/0xe0fe589b1c3092877cdb6267d483c9e3473b3de44d174150124d7f9034fcbf53) · h=7 → [`0x2998be3c…`](https://sepolia.etherscan.io/tx/0x2998be3c0dd62d979e2559f598c8051fafaaced8ab8563e43c03c0925570b26a) · h=8 → [`0x487d32ee…`](https://sepolia.etherscan.io/tx/0x487d32ee4c0fce008a006ff7dc259582452a760fe40e80318c2586771530aecc)
+- Type 2 h=5 (2631 B) → [`0xf8764a62…`](https://sepolia.etherscan.io/tx/0xf8764a6259cc5505fa36db35213b40d8dfc2681c0d04d5bd455cae6a0af00ad0) · h=7 (2663 B) → [`0x7c0b66cc…`](https://sepolia.etherscan.io/tx/0x7c0b66ccb8ae2ccb004895233eeba5645a16e5a926ae9eeff8bce1ae928a7029) · h=8 (2679 B) → [`0xd86f5c0f…`](https://sepolia.etherscan.io/tx/0xd86f5c0f49af23253b4d72c54ebabc7b1d6897dc975bd4d850f54a782ef2c193)
 
 **ethrex (chain 1729)**
 
@@ -504,9 +534,15 @@ loop, no prefund dance, no account ↔ EntryPoint bookkeeping.
 # Deploy full stack to Sepolia
 forge script script/DeployJardineroSepolia.s.sol --rpc-url sepolia --broadcast
 
-# Run 4337 cycle (3× Type 1 + 3× Type 2 via Candide)
+# (fixed-h=7) Run 4337 cycle (3× Type 1 + 3× Type 2 via Candide)
 python3 script/jardin_t0_userop.py save-addresses <t0> <forsc> <factory>
 python3 script/jardin_t0_userop.py cycle
+
+# (variable-h) Deploy the variable-h verifier + sibling factory
+forge script script/DeployJardineroVhSepolia.s.sol --rpc-url sepolia --broadcast
+
+# (variable-h) Run mixed-h cycle (Type 1 at h=5/7/8 + Type 2 on each)
+python3 script/jardin_t0_userop.py cycle-vh
 
 # Run frame-tx cycle on ethrex (3× Type 1 + 3× Type 2)
 python3 script/jardinero_frame_tx.py cycle

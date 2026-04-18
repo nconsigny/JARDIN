@@ -46,7 +46,7 @@ SPHINCs-Asm (deployed once, stateless, pure)
 | `SphincsAccount.sol` | ERC-4337 hybrid account (keys in storage, rotatable) |
 | `SphincsAccountFactory.sol` | Deploys accounts (shared verifier in constructor) |
 | `SphincsFrameAccount.sol` | Solidity reference for EIP-8141 frame account |
-| `JardinForsCVerifier.sol` | JARDÍN FORS+C-only verifier: k=26 a=5, verify=~51K |
+| `JardinForsCVerifier.sol` | JARDÍN FORS+C-only verifier: k=26 a=5, variable h ∈ [2,8] (inferred from sig length), verify ≈ 50.6K + 300×h gas |
 | `JardinT0Verifier.sol` | JARDINERO Tier-0 verifier: plain-FORS + WOTS+C hypertree, verify=470K |
 | `JardinAccount.sol` | JARDINERO hybrid ECDSA + ERC-4337: Type 1 (T0, primary) + Type 2 (FORS+C) + Type 3 (C11 optional recovery) |
 | `JardinAccountFactory.sol` | Deploys JARDINERO accounts (ECDSA owner + T0 + FORS+C verifiers) |
@@ -120,10 +120,17 @@ T0 verify alone (assembly): **470K gas**. FORS+C verify alone: **51K gas**.
 
 The ~55K/47K frame advantage is EntryPoint overhead we don't pay on ethrex.
 
-FORS+C (unchanged from earlier JARDÍN): k=26, a=5, n=16B (128-bit). Balanced
-Merkle h=7, Q_MAX=128. q encoded as 1-byte explicit field. FORS+C tolerates
-r=2 at 105-bit. H_msg: 192-byte domain-separated hash
-(seed||root||R||msg||counter||domain).
+FORS+C (unchanged params): k=26, a=5, n=16B (128-bit). q encoded as 1-byte
+explicit field. FORS+C tolerates r=2 at 105-bit. H_msg: 192-byte domain-
+separated hash (seed||root||R||msg||counter||domain).
+
+Variable outer-Merkle height: h ∈ [2, 8] (Q_MAX = 2^h). Inferred from sig
+length: `h = (len - 2453) / 16`, revert unless `2 ≤ h ≤ 8` and length is
+16-aligned. No extra wire byte. A single deployed verifier accepts Type 2
+sigs from slots of any supported h. Because `forscVerifier` is immutable on
+`JardinAccount`, existing accounts stay bound to whichever verifier was
+baked into their factory; new accounts created via the variable-h factory
+get the flexibility. Deployment addresses below.
 
 ### Off-chain Components
 
