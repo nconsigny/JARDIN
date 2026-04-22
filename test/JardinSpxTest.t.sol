@@ -3,7 +3,7 @@ pragma solidity ^0.8.28;
 
 import "forge-std/Test.sol";
 import "../src/JardinSpxVerifier.sol";
-import "../src/JardinForsCVerifier.sol";
+import "../src/JardinForsPlainVerifier.sol";
 import "../src/JardinAccountFactory.sol";
 import "../src/JardinAccount.sol";
 import "account-abstraction/interfaces/IEntryPoint.sol";
@@ -109,9 +109,9 @@ contract JardinSpxTest is Test {
     function testSpxRejectsTamperedXMSSAuth()    public view { _assertTamperFails(2592 + 720 + 8); } // layer-0 XMSS auth
 
     function testFactoryDeploysWithSpx() public {
-        JardinForsCVerifier forsc = new JardinForsCVerifier();
+        JardinForsPlainVerifier fors = new JardinForsPlainVerifier();
         JardinAccountFactory factory = new JardinAccountFactory(
-            IEntryPoint(address(0xdead)), address(verifier), address(forsc)
+            IEntryPoint(address(0xdead)), address(verifier), address(fors)
         );
 
         address ecdsaOwner = address(0xBEEF);
@@ -121,7 +121,7 @@ contract JardinSpxTest is Test {
         assertEq(address(account), predicted, "CREATE2 address mismatch");
         assertEq(account.owner(), ecdsaOwner);
         assertEq(account.spxVerifier(), address(verifier));
-        assertEq(account.forscVerifier(), address(forsc));
+        assertEq(account.forsVerifier(), address(fors));
         assertEq(account.spxPkSeed(), cachedSeed);
         assertEq(account.spxPkRoot(), cachedRoot);
         assertEq(account.c11Verifier(), address(0), "C11 recovery must be unset on deploy");
@@ -135,9 +135,9 @@ contract JardinSpxTest is Test {
     }
 
     function testRotateSpxKeys() public {
-        JardinForsCVerifier forsc = new JardinForsCVerifier();
+        JardinForsPlainVerifier fors = new JardinForsPlainVerifier();
         JardinAccountFactory factory = new JardinAccountFactory(
-            IEntryPoint(address(0xdead)), address(verifier), address(forsc)
+            IEntryPoint(address(0xdead)), address(verifier), address(fors)
         );
         JardinAccount account = factory.createAccount(
             address(0xBEEF), cachedSeed, cachedRoot

@@ -16,8 +16,10 @@ from jardin_spx_signer import (
     spx_sign,
     keccak256 as _keccak_bytes,  # returns bytes
 )
-from jardin_signer import (
-    build_balanced_tree, jardin_sign, Q_MAX,
+from jardin_fors_plain_signer import (
+    build_balanced_tree as fors_plain_build_tree,
+    fors_plain_sign,
+    MIN_H, MAX_H,
 )
 from frame_tx import (
     build_frame_tx, compute_sig_hash, send_raw_tx,
@@ -61,15 +63,16 @@ def make_spx_keys():
     pk_root = spx_build_root(pk_seed, sk_seed)
     return sk_seed, sk_prf, pk_seed, pk_root
 
-def make_sub(gen=1):
-    """Derive a FORS+C sub-key (ints with value in high 16B, matching jardin_signer)."""
+def make_sub(gen=1, h=4):
+    """Derive a plain-FORS sub-key (ints with value in high 16B, matching jardin_signer)."""
     master = master_sk_bytes()
-    sub_ent = _keccak_bytes(master + b"jardinero_device_spx_" + str(gen).encode())
+    sub_ent = _keccak_bytes(master + b"jardinero_device_spx_" + str(gen).encode() + b"_h" + str(h).encode())
     sub_pk_seed = keccak_int(b"jardinero_pk_seed" + sub_ent) & N_MASK_INT
     sub_sk_seed = keccak_int(b"jardinero_sk_seed" + sub_ent)
-    print(f"  Building balanced FORS+C tree (gen={gen}, Q_MAX={Q_MAX})...", file=sys.stderr)
+    q_max = 1 << h
+    print(f"  Building plain-FORS balanced tree (gen={gen}, h={h}, Q_MAX={q_max})...", file=sys.stderr)
     t0 = time.time()
-    levels, sub_pk_root = build_balanced_tree(sub_pk_seed, sub_sk_seed)
+    levels, sub_pk_root = fors_plain_build_tree(sub_pk_seed, sub_sk_seed, h)
     print(f"  Keygen: {time.time()-t0:.1f}s", file=sys.stderr)
     return sub_pk_seed, sub_sk_seed, sub_pk_root, levels
 
@@ -87,11 +90,11 @@ def spx_type1_register(sk_seed, sk_prf, pk_seed, pk_root,
             (sub_pk_int   >> 128).to_bytes(16, "big") +
             (sub_root_int >> 128).to_bytes(16, "big") + spx_sig)
 
-def jardin_type2(sub_pk, sub_sk, sub_root, q, levels, sig_hash):
-    forsc, *_ = jardin_sign(sub_pk, sub_sk, sub_root, levels, sig_hash, q)
+def jardin_type2(sub_pk, sub_sk, sub_root, q, levels, sig_hash, h_tree):
+    fors_sig, *_ = fors_plain_sign(sub_pk, sub_sk, sub_root, levels, sig_hash, q, h_tree)
     return (bytes([0x02]) +
             (sub_pk   >> 128).to_bytes(16, "big") +
-            (sub_root >> 128).to_bytes(16, "big") + forsc)
+            (sub_root >> 128).to_bytes(16, "big") + fors_sig)
 
 # ============================================================
 #  Frame data encoders
@@ -219,11 +222,12 @@ def cmd_cycle():
             return
 
     last_gen = max((r["gen"] for r in results if r["kind"] == "Type1"), default=None)
+    h_tree = len(levels) - 1
     for q in range(1, 4):
-        print(f"\n[Type 2 #{q}] Compact FORS+C on gen={last_gen}, q={q}")
+        print(f"\n[Type 2 #{q}] Compact plain-FORS on gen={last_gen}, q={q}, h={h_tree}")
         label = f"Type2 q={q}"
         res = do_tx(rpc, chain_id, sender, label,
-                    lambda sh, _q=q: jardin_type2(sub_pk, sub_sk, sub_root, _q, levels, sh))
+                    lambda sh, _q=q: jardin_type2(sub_pk, sub_sk, sub_root, _q, levels, sh, h_tree))
         results.append({"kind": "Type2", "q": q, "res": res})
 
     print("\n" + "=" * 60)

@@ -10,7 +10,7 @@ import "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 /// @notice Every UserOp requires ECDSA + post-quantum signature.
 ///
 ///   Type 1 (0x01): ECDSA + SPX (plain SPHINCS+, slot-registration + stateless fallback)
-///   Type 2 (0x02): ECDSA + FORS+C compact via registered sub-key slot
+///   Type 2 (0x02): ECDSA + plain-FORS compact via registered sub-key slot (variable-h)
 ///   Type 3 (0x03): ECDSA + C11 (optional recovery; only if c11Verifier set)
 ///
 /// SPX parameters: n=16, h=20, d=5, h'=4, a=7, k=20, w=8, l=45, plain WOTS+ checksum.
@@ -26,7 +26,7 @@ contract JardinAccount is BaseAccount {
 
     IEntryPoint private immutable _entryPoint;
     address public immutable spxVerifier;
-    address public immutable forscVerifier;
+    address public immutable forsVerifier;
 
     address public owner;
     bytes32 public spxPkSeed;
@@ -51,14 +51,14 @@ contract JardinAccount is BaseAccount {
         IEntryPoint ep,
         address _owner,
         address _spxVerifier,
-        address _forscVerifier,
+        address _forsVerifier,
         bytes32 _spxPkSeed,
         bytes32 _spxPkRoot
     ) {
         _entryPoint = ep;
         owner = _owner;
         spxVerifier = _spxVerifier;
-        forscVerifier = _forscVerifier;
+        forsVerifier = _forsVerifier;
         spxPkSeed = _spxPkSeed;
         spxPkRoot = _spxPkRoot;
     }
@@ -109,7 +109,7 @@ contract JardinAccount is BaseAccount {
     ///
     /// Type 1 PQ payload: [subPkSeed 16B][subPkRoot 16B][SPX sig 6512B]
     ///   subSeed==0 && subRoot==0 ⇒ stateless fallback (skip registration).
-    /// Type 2 PQ payload: [subPkSeed 16B][subPkRoot 16B][FORS+C sig]
+    /// Type 2 PQ payload: [subPkSeed 16B][subPkRoot 16B][plain-FORS sig, 2593 + 16·h B]
     /// Type 3 PQ payload: [C11 sig 3976B]  — uses c11PkSeed/c11PkRoot
     function _validateSignature(
         PackedUserOperation calldata userOp,
@@ -151,7 +151,7 @@ contract JardinAccount is BaseAccount {
             }
 
         } else if (sigType == 0x02) {
-            // ── Type 2: ECDSA + FORS+C compact ──
+            // ── Type 2: ECDSA + plain-FORS compact ──
             require(pq.length >= 32, InvalidSignatureType());
             bytes16 subSeed = bytes16(pq[0:16]);
             bytes16 subRoot = bytes16(pq[16:32]);
@@ -159,9 +159,9 @@ contract JardinAccount is BaseAccount {
             bytes32 key = keccak256(abi.encodePacked(subSeed, subRoot));
             require(slots[key] != 0, UnregisteredSlot());
 
-            (bool ok, bytes memory res) = forscVerifier.staticcall(
+            (bool ok, bytes memory res) = forsVerifier.staticcall(
                 abi.encodeWithSignature(
-                    "verifyForsC(bytes32,bytes32,bytes32,bytes)",
+                    "verifyForsPlain(bytes32,bytes32,bytes32,bytes)",
                     bytes32(subSeed), bytes32(subRoot), userOpHash, pq[32:]
                 )
             );

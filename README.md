@@ -12,7 +12,7 @@
 
 ---
 
-Post-quantum signature verification on Ethereum using SPHINCs- — lightweight hash-based signatures derived from SPHINCS+. Supports JARDÍN hybrid accounts (ECDSA + SPHINCs-) with a plain-SPHINCS+ (SPX) registration path and a balanced-tree FORS+C compact path, stateless ERC-4337 accounts, and native EIP-8141 frame transaction accounts (pure PQ).
+Post-quantum signature verification on Ethereum using SPHINCs- — lightweight hash-based signatures derived from SPHINCS+. Supports JARDÍN hybrid accounts (ECDSA + SPHINCs-) with a plain-SPHINCS+ (SPX) registration path and a variable-height plain-FORS compact path, stateless ERC-4337 accounts, and native EIP-8141 frame transaction accounts (pure PQ).
 
 For the full JARDÍN design write-up, see [`writeUp.md`](./writeUp.md).
 
@@ -455,108 +455,92 @@ Signature layout (what the verifier receives):
 | Type | Role | Payload |
 |---|---|---|
 | `0x01` | **ECDSA + SPX** (primary slot registration) | `[ecdsa 65][subSeed 16][subRoot 16][SPX sig 6,512]` = 6,609 B |
-| `0x02` | ECDSA + FORS+C (compact, requires registered slot) | `[ecdsa 65][subSeed 16][subRoot 16][FORS+C sig]` = 2,598 B + 16·h |
+| `0x02` | ECDSA + plain-FORS (compact, requires registered slot) | `[ecdsa 65][subSeed 16][subRoot 16][plain-FORS sig]` = 2,690 B + 16·h |
 | `0x03` | ECDSA + C11 (optional recovery — if attached) | `[ecdsa 65][C11 sig 3,976]` = 4,041 B |
 
 At deploy time the account carries `spxPkSeed / spxPkRoot` and
-`forscVerifier` (immutable). `c11Verifier` starts at `address(0)`; the user
+`forsVerifier` (immutable). `c11Verifier` starts at `address(0)`; the user
 attaches it later if desired. The slot-registration path never requires C11.
 
-### Variable-height FORS+C
+### Plain-FORS compact-path parameters
 
-The FORS+C verifier accepts Type 2 sigs from slots with any outer Merkle
-height `h ∈ [2, 8]` (Q_MAX = 2^h = 4 … 256). `h` is inferred from the
-signature length with no extra wire byte:
-
-```
-h = (sig.length − 2453) / 16          (valid iff 2 ≤ h ≤ 8 and 16-aligned)
-sig.length = 2452 (FORS+C body) + 1 (q) + 16·h (auth path)
-```
-
-`forscVerifier` is immutable on `JardinAccount`, so already-deployed accounts
-(pre-variable-h) remain pinned to h=7. **New accounts created through the
-variable-h factory (see "Deployed" below) can register slots at any
-supported h.** This lets a hardware signer use a fast h=5 slot (Q_MAX=32)
-for first-time onboarding and switch to h=7 later without swapping verifiers
-or accounts.
-
-## Measured Gas — 3×3 cycle on both chains
-
-### Sepolia via Candide bundler
-
-| | Actual gas used | `actualGasCost` avg |
+| Name | Value | Notes |
 |---|---|---|
-| Type 1 (SPX + register) × 3 | ~floor-bound (calldata 416.8K) | **1.08 mETH** |
-| Type 2 (FORS+C compact) × 3 | constant across q | **0.55 mETH** |
+| k | 32 | FORS trees per signature |
+| a | 4 | FORS tree height (16 leaves/tree) |
+| n | 16 bytes | 128-bit keccak truncation |
+| R | 32 bytes | per-signature randomness |
+| h | 2..8 | outer balanced Merkle height (Q_MAX = 2^h) |
+| Sig length | 2593 + 16·h | 2,625 B at h=2 … 2,721 B at h=8; 2,657 B at h=4 |
+| Security @ r=1 | k·a = 128 bits | one-time FORS |
+| H_msg | 160 B, domain `0xFF..FD` | no counter grinding |
 
-All 6/6 succeeded. SPX verify compute on-chain: **278K gas**;
-`eth_estimateGas` on the deployed verifier: **401K**. EntryPoint + calldata
-push the 4337 total above the pure-compute figure.
+No counter grind and no forced-zero last tree (unlike FORS+C): every one of
+the k=32 trees reveals a real secret + full auth path. The design trades a
+~4% larger signature for a simpler verifier (~60K gas, no WOTS chains) and
+much simpler signer logic (no grinding loop).
 
-### ethrex (EIP-8141 frame)
+### Variable-height plain-FORS
 
-| | Actual gas used |
-|---|---|
-| Type 1 (SPX + register) × 3 | **416K** avg (415,660) |
-| Type 2 (FORS+C compact) × 3 | **121K** avg (120,672) |
+`JardinForsPlainVerifier` accepts Type 2 sigs from slots with any outer
+Merkle height `h ∈ [2, 8]` (Q_MAX = 2^h = 4 … 256). `h` is inferred from
+the signature length with no extra wire byte:
 
-All 6/6 succeeded with `F0=0x1 F1=0x1` (both frames OK). Frame savings vs
-4337 are the EntryPoint overhead: no `handleOps` loop, no prefund dance, no
-account ↔ EntryPoint bookkeeping.
+```
+h = (sig.length − 2593) / 16          (valid iff 2 ≤ h ≤ 8 and 16-aligned)
+sig.length = 32 (R) + 2560 (FORS: k=32 × (sk+auth)) + 1 (q) + 16·h (outer auth)
+```
 
-## Deployed (JARDINERO — SPX)
+`forsVerifier` is immutable on `JardinAccount`, so already-deployed accounts
+stay pinned to whichever verifier was baked into their factory. A single
+deployed plain-FORS verifier handles every supported `h` — a hardware signer
+can use a fast h=2 slot (Q_MAX=4) during enrollment and upgrade to h=7 later
+without swapping verifiers or account addresses.
 
-**Sepolia (chain 11155111, EntryPoint v0.9)**
+## Measured Gas (targets; live redeploy pending)
 
-| Contract | Address |
-|---|---|
-| JARDÍN SPX Verifier | [`0xdC424A07…`](https://sepolia.etherscan.io/address/0xdC424A07981A5d6c8Afd0778141d3551e327b9AB) |
-| FORS+C Verifier (variable h ∈ [2,8]) | [`0x99B10BB6…`](https://sepolia.etherscan.io/address/0x99B10BB66da9c538E4A4A7D6cBE4E56bFe2Be979) |
-| JARDÍN Factory | [`0x08c0B125…`](https://sepolia.etherscan.io/address/0x08c0B1254a666dEB1c5A3972cC981EA6694c71c1) |
-| JARDÍN Account (cycle sample) | [`0x88a61f94…`](https://sepolia.etherscan.io/address/0x88a61f94Ea5CaCaA0Cdd5FC39ece95A910fb10fe) |
+Plain-FORS verify compute (Foundry `gasleft()` at h=4): **59,716 gas** — ~4×
+cheaper than the old FORS+C (~200K). On-chain 4337 cost will be dominated by
+the EntryPoint + calldata overhead (~56K) plus ECDSA + account logic; frame
+txs shed the EntryPoint overhead entirely.
 
-Candide cycle (3× Type 1 SPX + 3× Type 2 FORS+C, 6/6 OK):
-- Type 1: [`0x7f99f057…`](https://sepolia.etherscan.io/tx/0x7f99f057aa33df13976e818d757059051ee90fc34e87b6e46d3a8128ed4e7235) · [`0x4ca7825a…`](https://sepolia.etherscan.io/tx/0x4ca7825a32531a07cffa32a19fffb6246c5efebd94cc20fc0c2939ef4a9f51be) · [`0xda64ef93…`](https://sepolia.etherscan.io/tx/0xda64ef934673797f6842937d5eb5ebb9007fcaf2363d780fcb7063e6888a5edd)
-- Type 2: [`0xb8b028be…`](https://sepolia.etherscan.io/tx/0xb8b028bed4f83ef7ee50ac51c2c5beefc66f854628f89812b0a6be643887e143) · [`0x72c0fea1…`](https://sepolia.etherscan.io/tx/0x72c0fea16e13af416de6f08260c2caf11a77868143902dc94ea8bfc0102fb99c) · [`0x904284dd…`](https://sepolia.etherscan.io/tx/0x904284dd6a5263139fa3c5dc6063b757550d4cd81780ab65ca63d3fd604028b2)
+Projected totals at h=4 (2,657 B sig):
 
-**ethrex (chain 1729, EIP-8141 frame tx)**
+|                  | Frame (ethrex) | 4337 (Sepolia) |
+|------------------|---------------:|---------------:|
+| Type 1 (SPX)     | ~416K          | ~floor (~1.1 mETH actualGasCost) |
+| Type 2 (plainFORS, h=4) | ~95K     | ~130K + EntryPoint overhead |
 
-| Contract | Address |
-|---|---|
-| JARDÍN SPX Verifier | `0xF5b81Fe0B6F378f9E6A3fb6A6cD1921FCeA11799` |
-| FORS+C Verifier | `0xa779C1D17bC5230c07afdC51376CAC1cb3Dd5314` |
-| JardineroFrameAccount Impl | `0x67baFF31318638F497f4c4894Cd73918563942c8` |
-| Frame Proxy (67-byte hand-optimised) | `0x6533158b042775e2FdFeF3cA1a782EFDbB8EB9b1` |
+Live cycle numbers and deployment addresses will be added once we redeploy
+the new stack on Sepolia + ethrex.
 
-Frame cycle (3× Type 1 SPX + 3× Type 2 FORS+C, 6/6 OK):
-- Type 1: `0x873d3930…9bd57cf`, `0x10d8e1d9…a7321f97`, `0x0a1c82f3…38b13f5b`
-- Type 2: `0x4e5161c3…161a36a7`, `0x7b88852a…25e32f61`, `0xaa76bb2d…3dff4269`
+**Previous deployment (SPX + FORS+C, superseded by this refactor):**
 
-**Legacy T0 deployment** (kept around; not the default path):
+- Sepolia: SPX `0xdC424A07…`, FORS+C `0x99B10BB6…`, Factory `0x08c0B125…`
+- ethrex:  SPX `0xF5b81Fe0…`, FORS+C `0xa779C1D1…`, Frame proxy `0x6533158b…`
 
-| Network | T0 Verifier | Factory (T0-based) | Frame Proxy (T0-based) |
-|---|---|---|---|
-| Sepolia | `0x188c4Ed4…AD5767` | `0xA9a71887…F9E95F0` | — |
-| ethrex  | `0xFD6D23eE…7705e`  | —                      | `0xA3307BF3…47Db` |
+These still work for Type 1 and accept the old 2565-byte FORS+C sigs at
+Type 2; the new plain-FORS stack is deployed in parallel from
+`DeployJardineroSepolia.s.sol`.
 
 ## Usage
 
 ```bash
-# Deploy full SPX stack to Sepolia
+# Deploy SPX + plain-FORS + factory to Sepolia
 forge script script/DeployJardineroSepolia.s.sol --rpc-url sepolia --broadcast
 
-# Run 4337 cycle (3× Type 1 SPX + 3× Type 2 FORS+C via Candide)
-python3 script/jardin_spx_userop.py save-addresses <spxVerifier> <forscVerifier> <factory>
+# Run 4337 cycle (3× Type 1 SPX + 3× Type 2 plain-FORS via Candide)
+python3 script/jardin_spx_userop.py save-addresses <spxVerifier> <forsVerifier> <factory>
 python3 script/jardin_spx_userop.py cycle
 
 # Run frame-tx cycle on ethrex (requires an already-deployed proxy)
 python3 script/jardinero_frame_tx.py cycle
 
-# Re-deploy the frame proxy on ethrex (SPX in slot 0)
+# Re-deploy the frame proxy on ethrex
 python3 script/deploy_jardin_frame.py \
   --impl <JardineroFrameAccount impl> \
   --verifier <SPX verifier> \
-  --forsc <FORS+C verifier> \
+  --forsc <plain-FORS verifier> \
   --seed <spxPkSeed as bytes32> --root <spxPkRoot as bytes32>
 ```
 

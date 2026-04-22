@@ -46,13 +46,14 @@ SPHINCs-Asm (deployed once, stateless, pure)
 | `SphincsAccount.sol` | ERC-4337 hybrid account (keys in storage, rotatable) |
 | `SphincsAccountFactory.sol` | Deploys accounts (shared verifier in constructor) |
 | `SphincsFrameAccount.sol` | Solidity reference for EIP-8141 frame account |
-| `JardinForsCVerifier.sol` | JARDÍN FORS+C-only verifier: k=26 a=5, variable h ∈ [2,8] (inferred from sig length), verify ≈ 50.6K + 300×h gas |
+| `JardinForsPlainVerifier.sol` | JARDÍN plain-FORS compact-path verifier: k=32 a=4, variable h ∈ [2,8] (inferred from sig length), verify ≈ 60K |
+| `JardinForsCVerifier.sol` | (Legacy) JARDÍN FORS+C-only verifier: k=26 a=5, variable h ∈ [2,8], verify ≈ 50.6K + 300×h |
 | `JardinSpxVerifier.sol` | JARDÍN plain-SPHINCS+ (SPX) verifier: h=20 d=5 a=7 k=20 w=8 l=45, 6512B sig, verify=278K |
 | `JardinT0Verifier.sol` | (Legacy alternative) JARDINERO Tier-0 verifier: plain-FORS + WOTS+C hypertree, verify=470K |
-| `JardinAccount.sol` | JARDÍN hybrid ECDSA + ERC-4337: Type 1 (SPX, primary) + Type 2 (FORS+C) + Type 3 (C11 optional recovery) |
-| `JardinAccountFactory.sol` | Deploys JARDÍN accounts (ECDSA owner + SPX + FORS+C verifiers) |
+| `JardinAccount.sol` | JARDÍN hybrid ECDSA + ERC-4337: Type 1 (SPX, primary) + Type 2 (plain-FORS) + Type 3 (C11 optional recovery) |
+| `JardinAccountFactory.sol` | Deploys JARDÍN accounts (ECDSA owner + SPX + plain-FORS verifiers) |
 | `JardinFrameAccount.sol` | Legacy C11-based EIP-8141 frame account |
-| `JardineroFrameAccount.sol` | JARDÍN EIP-8141 frame account: pure PQ, SPX + FORS+C |
+| `JardineroFrameAccount.sol` | JARDÍN EIP-8141 frame account: pure PQ, SPX + plain-FORS |
 
 ### Variants
 
@@ -98,10 +99,10 @@ truncated to 128 bits.
 | Security @ 2^11 sigs | 128.0 bits (flat to 127.8 at 2^14) |
 
 ```
-JardinSpxVerifier        JardinForsCVerifier           SPHINCs-C11Asm (optional)
-    ↑ verify(...)             ↑ verifyForsC(...)            ↑ verify(...)
+JardinSpxVerifier        JardinForsPlainVerifier       SPHINCs-C11Asm (optional)
+    ↑ verify(...)             ↑ verifyForsPlain(...)        ↑ verify(...)
     │                         │                             │
-    └─ Type 1 (ECDSA+SPX) ────┘── Type 2 (ECDSA+FORS+C)     └── Type 3 (ECDSA+C11 recovery)
+    └─ Type 1 (ECDSA+SPX) ────┘── Type 2 (ECDSA+plainFORS)  └── Type 3 (ECDSA+C11 recovery)
                       │
                  JardinAccount (ERC-4337, hybrid)
                  ├── owner (ECDSA signer, rotatable)
@@ -109,20 +110,26 @@ JardinSpxVerifier        JardinForsCVerifier           SPHINCs-C11Asm (optional)
                  ├── c11Verifier / c11PkSeed / c11PkRoot (zero until attached)
                  ├── slots: mapping(H(subPkSeed,subPkRoot) → 1)
                  ├── Type 1: SPX sig + register sub-key slot (or stateless fallback when sub=0)
-                 ├── Type 2: FORS+C compact (requires registered slot)
+                 ├── Type 2: plain-FORS compact (k=32, a=4, variable h ∈ [2,8]; requires registered slot)
                  └── Type 3: C11 recovery (requires attachC11Recovery self-call)
 ```
 
-Measured gas (Sepolia via Candide + ethrex frame txs, 3×3 cycle each):
+Plain-FORS compact-path parameters:
+- k=32 FORS trees, a=4 tree height (16 leaves/tree)
+- Sig length = 2593 + 16·h bytes (2625 B at h=2 … 2721 B at h=8; 2657 B at h=4)
+- No counter grinding, no forced-zero last tree (all k trees revealed with sk+auth)
+- H_msg = keccak256(seed‖root‖R‖msg‖0xFF..FD), 160 B (distinct from C11/T0/FORS+C)
+- Verify gas: ~60K (plain FORS has no WOTS chains)
+
+Measured gas (3×3 cycle, SPX registration + plain-FORS compact):
 
 | Event | Sig | 4337 (Sepolia) | Frame (ethrex) |
 |---|---|---|---|
-| Type 1 (SPX + register) | 6,610 B / 6,545 B | **~1.1 mETH avg** (actualGasCost) | **416K gas** |
-| Type 2 (FORS+C compact) | 2,663 B / 2,598 B | **~0.55 mETH avg** (actualGasCost) | **121K gas** |
+| Type 1 (SPX + register) | 6,610 B / 6,545 B | ~1.1 mETH (actualGasCost) | 416K gas |
+| Type 2 (plain-FORS, h=4) | ~2,760 B / 2,657 B | TBD | ~95K gas (projected: ~60K verify + frame overhead) |
 
-SPX verify alone (assembly): **278K gas** compute; **401K on-chain** (4337
-Sepolia), dominated by calldata floor (6512·64 = 416,768 gas). FORS+C verify
-alone: **51K gas**.
+SPX verify alone: **278K gas** compute; **401K on-chain** (calldata floor at
+6512·64 = 416.8K). Plain-FORS verify alone: **~60K gas**.
 
 ### Legacy registration variants
 
@@ -146,7 +153,8 @@ get the flexibility. Deployment addresses below.
 ### Off-chain Components
 
 - `script/signer.py` — Python signer (c2/c6/c7 variants)
-- `script/jardin_signer.py` — JARDÍN FORS+C signer (balanced h=7 tree + FORS+C)
+- `script/jardin_signer.py` — Legacy JARDÍN FORS+C signer (k=26, a=5)
+- `script/jardin_fors_plain_signer.py` — JARDÍN plain-FORS signer (k=32, a=4, current compact path)
 - `script/jardin_spx_signer.py` — JARDÍN plain-SPHINCS+ signer (current registration path)
 - `script/jardin_t0_signer.py` — Legacy JARDINERO T0 signer
 - `script/jardin_userop.py` — Legacy JARDÍN (C11-based) 4337 UserOp builder

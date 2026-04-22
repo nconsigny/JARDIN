@@ -13,7 +13,7 @@ Environment (read from .env):
     SEPOLIA_RPC_URL        — RPC endpoint
 
 Addresses (.jardin_spx_addresses.json):
-    spxVerifier, forscVerifier, factory
+    spxVerifier, forsVerifier, factory
 """
 
 import sys, os, json, time, subprocess
@@ -28,10 +28,10 @@ from jardin_spx_signer import (
     keccak256 as _keccak_bytes,   # returns bytes
     N as SPX_N,
 )
-from jardin_signer import (
-    build_balanced_tree,
-    jardin_sign,
-    Q_MAX,
+from jardin_fors_plain_signer import (
+    build_balanced_tree as fors_plain_build_tree,
+    fors_plain_sign,
+    MIN_H, MAX_H,
 )
 
 # ============================================================
@@ -67,14 +67,18 @@ def load_env():
 
 def load_addresses():
     if not os.path.exists(ADDR_FILE):
-        eprint(f"Missing {ADDR_FILE}. Run `save-addresses <spx> <forsc> <factory>` first.")
+        eprint(f"Missing {ADDR_FILE}. Run `save-addresses <spx> <fors> <factory>` first.")
         sys.exit(1)
     with open(ADDR_FILE) as f:
-        return json.load(f)
+        data = json.load(f)
+    # Backwards-compat: older state files used the "forscVerifier" key.
+    if "forsVerifier" not in data and "forscVerifier" in data:
+        data["forsVerifier"] = data["forscVerifier"]
+    return data
 
-def save_addresses(spx, forsc, factory):
+def save_addresses(spx, fors, factory):
     with open(ADDR_FILE, "w") as f:
-        json.dump({"spxVerifier": spx, "forscVerifier": forsc, "factory": factory}, f, indent=2)
+        json.dump({"spxVerifier": spx, "forsVerifier": fors, "factory": factory}, f, indent=2)
     eprint(f"  addresses → {ADDR_FILE}")
 
 def cast(*args, **kwargs):
@@ -256,21 +260,22 @@ def gen_spx_keys():
     pk_root = spx_build_root(pk_seed, sk_seed)
     return sk_seed, sk_prf, pk_seed, pk_root
 
-def gen_sub_keys(slot_gen, h=7):
-    """Derive a FORS+C sub-key from master + slot_gen, build its balanced tree.
-       jardin_signer expects ints (not bytes). Convert consistently."""
+def gen_sub_keys(slot_gen, h=4):
+    """Derive a plain-FORS sub-key from master + slot_gen, build its balanced tree.
+       Returns (sub_pk_seed_int, sub_sk_seed_int, sub_pk_root_int, levels). The
+       underlying signer uses ints with the 128-bit value in the HIGH 16 bytes,
+       matching the jardin_signer conventions."""
     master = master_sk_from_env()
     tag = b"jardin_spx_sub_" + str(slot_gen).encode()
     if h is not None:
         tag += b"_h" + str(h).encode()
     sub_entropy = keccak_bytes(master + tag)
-    # jardin_signer uses ints in high bytes (N_MASK masked)
     N_MASK_INT = (1 << 256) - (1 << 128)
     sub_pk_seed = int.from_bytes(keccak_bytes(b"jardin_spx_pk_seed" + sub_entropy), "big") & N_MASK_INT
     sub_sk_seed = int.from_bytes(keccak_bytes(b"jardin_spx_sk_seed" + sub_entropy), "big")
     q_max = 1 << h
-    eprint(f"  Building FORS+C balanced tree (slot_gen={slot_gen}, h={h}, Q_MAX={q_max})...")
-    levels, sub_pk_root = build_balanced_tree(sub_pk_seed, sub_sk_seed, h)
+    eprint(f"  Building plain-FORS balanced tree (slot_gen={slot_gen}, h={h}, Q_MAX={q_max})...")
+    levels, sub_pk_root = fors_plain_build_tree(sub_pk_seed, sub_sk_seed, h)
     return sub_pk_seed, sub_sk_seed, sub_pk_root, levels
 
 def int_to_b16_high(v: int) -> bytes:
@@ -351,19 +356,19 @@ def _build_type1_sig(account, nonce, spx_sk_seed, spx_sk_prf, spx_pk_seed, spx_p
     uop["signature"] = "0x" + sig.hex()
     return uop
 
-def _build_type2_sig(account, nonce, sub_pk_seed, sub_sk_seed, sub_pk_root, levels, q):
+def _build_type2_sig(account, nonce, sub_pk_seed, sub_sk_seed, sub_pk_root, levels, q, h_tree):
     call_data = build_execute_calldata(account, 0)
-    uop = build_user_op(account, nonce, "0x" + call_data.hex(), ver_gas=250_000)
+    uop = build_user_op(account, nonce, "0x" + call_data.hex(), ver_gas=200_000)
     h = pack_user_op_hash(uop)
     env = load_env()
     ecdsa = Account.from_key(bytes.fromhex(env["PRIVATE_KEY"].replace("0x", "")))
     ecdsa_sig = ecdsa_sign(ecdsa, h)
-    eprint(f"  Signing with FORS+C (q={q})...")
-    forsc_sig, *_ = jardin_sign(sub_pk_seed, sub_sk_seed, sub_pk_root, levels,
-                                 int.from_bytes(h, "big"), q)
+    eprint(f"  Signing with plain-FORS (q={q}, h={h_tree})...")
+    fors_sig, *_ = fors_plain_sign(sub_pk_seed, sub_sk_seed, sub_pk_root, levels,
+                                    int.from_bytes(h, "big"), q, h_tree)
     ss_b = int_to_b16_high(sub_pk_seed)
     sr_b = int_to_b16_high(sub_pk_root)
-    sig = bytes([0x02]) + ecdsa_sig + ss_b + sr_b + forsc_sig
+    sig = bytes([0x02]) + ecdsa_sig + ss_b + sr_b + fors_sig
     uop["signature"] = "0x" + sig.hex()
     return uop
 
@@ -412,10 +417,11 @@ def cmd_cycle():
             eprint("  Type 1 failed — abort.")
             return
 
+    h_tree = len(levels) - 1
     for q in range(1, 4):
-        eprint(f"\n[Type 2 #{q}] Compact FORS+C on slot_gen={state['slot_gen']}, q={q}")
+        eprint(f"\n[Type 2 #{q}] Compact plain-FORS on slot_gen={state['slot_gen']}, q={q}")
         uop = _build_type2_sig(account, uop_nonce,
-                               sub_pk_seed, sub_sk_seed, sub_pk_root, levels, q)
+                               sub_pk_seed, sub_sk_seed, sub_pk_root, levels, q, h_tree)
         sig_bytes = len(bytes.fromhex(uop['signature'][2:]))
         eprint(f"  Submitting via Candide (sig bytes = {sig_bytes})")
         ok, cost, tx = submit_via_bundler(uop)
@@ -443,12 +449,12 @@ def cmd_cycle():
 
 def main():
     if len(sys.argv) < 2:
-        print("Usage: python3 jardin_spx_userop.py [deploy|cycle|save-addresses <spx> <forsc> <factory>]")
+        print("Usage: python3 jardin_spx_userop.py [deploy|cycle|save-addresses <spx> <fors> <factory>]")
         sys.exit(1)
     cmd = sys.argv[1]
     if cmd == "save-addresses":
         if len(sys.argv) != 5:
-            print("save-addresses <spxVerifier> <forscVerifier> <factory>")
+            print("save-addresses <spxVerifier> <forsVerifier> <factory>")
             sys.exit(1)
         save_addresses(sys.argv[2], sys.argv[3], sys.argv[4])
     elif cmd == "deploy":

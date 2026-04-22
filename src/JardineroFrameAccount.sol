@@ -5,22 +5,22 @@ pragma solidity ^0.8.28;
 /// @notice Storage layout matches the legacy JardinFrameAccount/JardineroFrameAccount
 ///         so the proxy bytecode (build_proxy_bytecode) and deployer keep working:
 ///             slot 0: spxVerifier     (was t0Verifier / c11Verifier)
-///             slot 1: forscVerifier
+///             slot 1: forsVerifier
 ///             slot 2: spxPkSeed       (was t0PkSeed / masterPkSeed)
 ///             slot 3: spxPkRoot       (was t0PkRoot / masterPkRoot)
 ///             slot 4: owner
 ///
 /// Frame tx layouts:
 ///   Type 1 (register):  VERIFY[sigHash‖01‖sub‖SPXsig] → SENDER[registerSlot(sub)]
-///   Type 2 (compact):   VERIFY[sigHash‖02‖sub‖FORSsig] → SENDER[execute(...)]
+///   Type 2 (compact):   VERIFY[sigHash‖02‖sub‖ForsPlainSig] → SENDER[execute(...)]
 ///   Stateless fallback: VERIFY[sigHash‖01‖0‖0‖SPXsig] → SENDER[execute(...)]
 ///
-/// Plain SPHINCS+ (SPX) replaces T0/C11 as the registration-path verifier.
-/// Signature length: 6512 B. Signing cost: ~36.6K keccak calls.
+/// Plain SPHINCS+ (SPX) is the registration-path verifier (6,512 B, ~36.6K keccak).
+/// Plain-FORS (k=32, a=4, variable h ∈ [2, 8]) is the compact path (2,593 + 16·h B).
 contract JardineroFrameAccount {
 
     address public spxVerifier;    // slot 0
-    address public forscVerifier;  // slot 1
+    address public forsVerifier;  // slot 1
     bytes32 public spxPkSeed;      // slot 2
     bytes32 public spxPkRoot;      // slot 3
     address public owner;          // slot 4
@@ -35,13 +35,13 @@ contract JardineroFrameAccount {
 
     constructor(
         address _spxVerifier,
-        address _forscVerifier,
+        address _forsVerifier,
         bytes32 _spxPkSeed,
         bytes32 _spxPkRoot,
         address _owner
     ) {
         spxVerifier = _spxVerifier;
-        forscVerifier = _forscVerifier;
+        forsVerifier = _forsVerifier;
         spxPkSeed = _spxPkSeed;
         spxPkRoot = _spxPkRoot;
         owner = _owner;
@@ -72,19 +72,19 @@ contract JardineroFrameAccount {
             require(ok && res.length >= 32 && abi.decode(res, (bool)), "SPX verify failed");
 
         } else if (sigType == 0x02) {
-            // Type 2: FORS+C compact — verify slot registration + signature
+            // Type 2: plain-FORS compact — verify slot registration + signature
             bytes16 subSeed = bytes16(sig[1:17]);
             bytes16 subRoot = bytes16(sig[17:33]);
             bytes32 key = keccak256(abi.encodePacked(subSeed, subRoot));
             require(slots[key] != 0, UnregisteredSlot());
 
-            (bool ok, bytes memory res) = forscVerifier.staticcall(
+            (bool ok, bytes memory res) = forsVerifier.staticcall(
                 abi.encodeWithSignature(
-                    "verifyForsC(bytes32,bytes32,bytes32,bytes)",
+                    "verifyForsPlain(bytes32,bytes32,bytes32,bytes)",
                     bytes32(subSeed), bytes32(subRoot), sigHash, sig[33:]
                 )
             );
-            require(ok && res.length >= 32 && abi.decode(res, (bool)), "FORS+C verify failed");
+            require(ok && res.length >= 32 && abi.decode(res, (bool)), "FORS-plain verify failed");
 
         } else {
             revert InvalidSignatureType();
@@ -115,10 +115,10 @@ contract JardineroFrameAccount {
         spxPkRoot = newPkRoot;
     }
 
-    function rotateVerifiers(address newSpx, address newForsc) external {
+    function rotateVerifiers(address newSpx, address newFors) external {
         require(msg.sender == address(this), NotSelf());
         spxVerifier = newSpx;
-        forscVerifier = newForsc;
+        forsVerifier = newFors;
     }
 
     function rotateOwner(address newOwner) external {

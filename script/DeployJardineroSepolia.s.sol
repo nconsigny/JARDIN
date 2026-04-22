@@ -3,11 +3,11 @@ pragma solidity ^0.8.28;
 
 import "forge-std/Script.sol";
 import "../src/JardinSpxVerifier.sol";
-import "../src/JardinForsCVerifier.sol";
+import "../src/JardinForsPlainVerifier.sol";
 import "../src/JardinAccountFactory.sol";
 
 /// @title DeployJardineroSepolia — Deploy JARDINERO stack on Sepolia
-/// @notice SPX verifier (primary, plain SPHINCS+) + FORS+C verifier (compact) + factory.
+/// @notice SPX verifier (primary, plain SPHINCS+) + plain-FORS verifier (compact) + factory.
 ///         C11 remains available as optional recovery — attached per-account
 ///         via JardinAccount.attachC11Recovery, not at factory level.
 ///
@@ -22,13 +22,13 @@ contract DeployJardineroSepolia is Script {
         JardinSpxVerifier spxVerifier = new JardinSpxVerifier();
         console.log("JARDIN SPX Verifier:", address(spxVerifier));
 
-        JardinForsCVerifier forscVerifier = new JardinForsCVerifier();
-        console.log("JARDIN FORS+C Verifier:", address(forscVerifier));
+        JardinForsPlainVerifier forsVerifier = new JardinForsPlainVerifier();
+        console.log("JARDIN FORS-plain Verifier:", address(forsVerifier));
 
         JardinAccountFactory factory = new JardinAccountFactory(
             IEntryPoint(ENTRYPOINT_V09),
             address(spxVerifier),
-            address(forscVerifier)
+            address(forsVerifier)
         );
         console.log("JARDIN Factory:", address(factory));
 
