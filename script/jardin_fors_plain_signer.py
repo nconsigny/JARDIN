@@ -35,13 +35,21 @@ Output: ABI-encoded (bytes32 seed, bytes32 root, bytes sig) hex on stdout.
 import sys, os, time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from jardin_signer import (
+from jardin_primitives import (
     keccak256, to_b32, to_b4,
     make_adrs, th, th_pair, th_multi,
     ADRS_FORS_TREE, ADRS_FORS_ROOTS, ADRS_JARDIN_MERKLE,
     N, N_MASK, FULL,
-    jardin_derive_keys,
 )
+
+def jardin_derive_keys(entropy_int):
+    """CLI helper: derive (pk_seed, sk_seed) from a 256-bit entropy value.
+    Matches the legacy jardin_signer.jardin_derive_keys so existing test
+    vectors keep working."""
+    sub_entropy = keccak256(b"jardin_sub_v1" + to_b32(entropy_int))
+    pk_seed = keccak256(b"jardin_pk_seed" + to_b32(sub_entropy)) & N_MASK
+    sk_seed = keccak256(b"jardin_sk_seed" + to_b32(sub_entropy))
+    return pk_seed, sk_seed
 
 # ============================================================
 #  Parameters

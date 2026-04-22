@@ -12,7 +12,9 @@
 
 ---
 
-Post-quantum signature verification on Ethereum using SPHINCs- — lightweight hash-based signatures derived from SPHINCS+. Supports JARDÍN hybrid accounts (ECDSA + SPHINCs-) with a plain-SPHINCS+ (SPX) registration path and a variable-height plain-FORS compact path, stateless ERC-4337 accounts, and native EIP-8141 frame transaction accounts (pure PQ).
+Post-quantum signature verification on Ethereum using SPHINCs- — lightweight hash-based signatures derived from SPHINCS+. Supports JARDÍN hybrid accounts (ECDSA + SPHINCs-) with a plain-SPHINCS+ (SPX) registration path and a variable-height plain-FORS compact path, stateless ERC-4337 accounts, and native EIP-8141 frame transaction accounts (pure PQ). Every current verifier shares one 32-byte ADRS layout and one set of tweakable-hash primitives, so a device port needs a single `sphincs_th*` implementation for every path.
+
+Earlier verifiers (stateless SPHINCs- C6–C11, JardinForsC, JardinT0, the legacy Sphincs / JardinFrame accounts) are frozen in [`legacy/`](./legacy/README.md) — same 32-byte ADRS kernel, different parameters.
 
 For the full JARDÍN design write-up, see [`writeUp.md`](./writeUp.md).
 

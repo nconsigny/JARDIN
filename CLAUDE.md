@@ -33,31 +33,34 @@ SPHINCs-Asm (deployed once, stateless, pure)
     └── FrameAccount (EIP-8141)     ← keys embedded in bytecode as PUSH32
 ```
 
-### Contracts
+### Current contracts (`src/`)
 
 | File | Purpose |
 |---|---|
-| `SPHINCs-C6Asm.sol` | Shared C6 verifier: h=24 w=16 l=32, verify=156K |
-| `SPHINCs-C7Asm.sol` | Shared C7 verifier: h=24 w=8 l=43, verify=127K |
-| `SPHINCs-C8Asm.sol` | Shared C8 verifier: h=20 w=16 l=32, verify=194K |
-| `SPHINCs-C9Asm.sol` | Shared C9 verifier: h=20 w=8 l=43, verify=117K |
-| `SPHINCs-C10Asm.sol` | Shared C10 verifier: h=18 w=8 l=43, verify=115K |
-| `SPHINCs-C11Asm.sol` | Shared C11 verifier: h=16 w=8 l=43, verify=116K |
-| `SphincsAccount.sol` | ERC-4337 hybrid account (keys in storage, rotatable) |
-| `SphincsAccountFactory.sol` | Deploys accounts (shared verifier in constructor) |
-| `SphincsFrameAccount.sol` | Solidity reference for EIP-8141 frame account |
-| `JardinForsPlainVerifier.sol` | JARDÍN plain-FORS compact-path verifier: k=32 a=4, variable h ∈ [2,8] (inferred from sig length), verify ≈ 60K |
-| `JardinForsCVerifier.sol` | (Legacy) JARDÍN FORS+C-only verifier: k=26 a=5, variable h ∈ [2,8], verify ≈ 50.6K + 300×h |
-| `JardinSpxVerifier.sol` | JARDÍN plain-SPHINCS+ (SPX) verifier: h=20 d=5 a=7 k=20 w=8 l=45, 6512B sig, verify=278K |
-| `JardinT0Verifier.sol` | (Legacy alternative) JARDINERO Tier-0 verifier: plain-FORS + WOTS+C hypertree, verify=470K |
-| `JardinAccount.sol` | JARDÍN hybrid ECDSA + ERC-4337: Type 1 (SPX, primary) + Type 2 (plain-FORS) + Type 3 (C11 optional recovery) |
-| `JardinAccountFactory.sol` | Deploys JARDÍN accounts (ECDSA owner + SPX + plain-FORS verifiers) |
-| `JardinFrameAccount.sol` | Legacy C11-based EIP-8141 frame account |
+| `JardinSpxVerifier.sol` | JARDÍN plain-SPHINCS+ (SPX) registration verifier: h=20 d=5 a=7 k=20 w=8 l=45, 6512B sig, 32-byte JARDIN ADRS, verify ~276K |
+| `JardinForsPlainVerifier.sol` | JARDÍN plain-FORS compact-path verifier: k=32 a=4, variable h ∈ [2,8] (inferred from sig length), verify ~60K |
+| `JardinAccount.sol` | JARDÍN hybrid ECDSA + ERC-4337: Type 1 (SPX) + Type 2 (plain-FORS) + Type 3 (C11 optional recovery) |
+| `JardinAccountFactory.sol` | Deploys JARDÍN accounts (SPX + plain-FORS wired as immutables) |
 | `JardineroFrameAccount.sol` | JARDÍN EIP-8141 frame account: pure PQ, SPX + plain-FORS |
 
-### Variants
+All three verifiers share one ADRS layout (32-byte, JARDIN family) and one
+set of tweakable-hash primitives (see `script/jardin_primitives.py`). A
+single device `sphincs_th*` implementation services every current path.
 
-All SPHINCs- variants use W+C_F+C, n=128-bit, d=2, domain-separated H_msg (160 bytes).
+### Frozen variants (`legacy/`)
+
+Prior verifiers / accounts / signers (SPHINCs- C6–C11, `SphincsAccount*`,
+`JardinT0Verifier`, `JardinForsCVerifier`, `JardinFrameAccount`, their
+off-chain signers and older deploy scripts) live under `legacy/{src,script,test}/`
+with git history preserved. They use the same 32-byte ADRS and same tweakable
+hash as the current stack, just different scheme parameters. See
+`legacy/README.md` for the inventory.
+
+### Legacy SPHINCs- variants (in `legacy/src/`)
+
+Reference values for the stateless C-series (WOTS+C + FORS+C, n=128-bit, d=2,
+domain-separated H_msg 160 bytes). Kept for benchmark reproducibility; no
+longer part of the default stack.
 
 | Variant | h | a | k | w | swn | Sig | sign_h | Verify | Frame | 4337 | sec_20 |
 |---|---|---|---|---|---|---|---|---|---|---|---|
@@ -114,12 +117,23 @@ JardinSpxVerifier        JardinForsPlainVerifier       SPHINCs-C11Asm (optional)
                  └── Type 3: C11 recovery (requires attachC11Recovery self-call)
 ```
 
+SPX parameters (plain SPHINCS+, registration path):
+- 32-byte JARDIN ADRS (`layer(4)‖tree(8)‖type(4)‖kp(4)‖ci(4)‖cp(4)‖ha(4)`)
+- Hash inputs: F = 96 B, H = 128 B, T_l = 1504 B, T_k = 704 B
+- H_msg = keccak(seed‖root‖R‖msg‖0xFF..FC), 160 B
+- LSB-first digest parsing; SLH-DSA base_w checksum (MSB-first 3-bit chunks)
+- Sig size 6512 B, verify gas ~276K, sign ~36.6K keccak
+
 Plain-FORS compact-path parameters:
 - k=32 FORS trees, a=4 tree height (16 leaves/tree)
 - Sig length = 2593 + 16·h bytes (2625 B at h=2 … 2721 B at h=8; 2657 B at h=4)
 - No counter grinding, no forced-zero last tree (all k trees revealed with sk+auth)
-- H_msg = keccak256(seed‖root‖R‖msg‖0xFF..FD), 160 B (distinct from C11/T0/FORS+C)
+- H_msg = keccak256(seed‖root‖R‖msg‖0xFF..FD), 160 B
 - Verify gas: ~60K (plain FORS has no WOTS chains)
+
+Domain separators (all written as 32-byte big-endian in H_msg's trailing word):
+C11 `0xFF..FF` · T0 `0xFF..FE` · plain-FORS `0xFF..FD` · SPX `0xFF..FC` ·
+FORS+C `0xFF..FF` + counter (structurally distinct — 192 B H_msg).
 
 Measured gas (3×3 cycle, SPX registration + plain-FORS compact):
 
@@ -152,19 +166,21 @@ get the flexibility. Deployment addresses below.
 
 ### Off-chain Components
 
-- `script/signer.py` — Python signer (c2/c6/c7 variants)
-- `script/jardin_signer.py` — Legacy JARDÍN FORS+C signer (k=26, a=5)
-- `script/jardin_fors_plain_signer.py` — JARDÍN plain-FORS signer (k=32, a=4, current compact path)
-- `script/jardin_spx_signer.py` — JARDÍN plain-SPHINCS+ signer (current registration path)
-- `script/jardin_t0_signer.py` — Legacy JARDINERO T0 signer
-- `script/jardin_userop.py` — Legacy JARDÍN (C11-based) 4337 UserOp builder
-- `script/jardin_spx_userop.py` — JARDÍN SPX 4337 UserOp builder (Candide bundler)
-- `script/jardin_t0_userop.py` — Legacy JARDINERO T0 4337 UserOp builder
-- `script/jardin_frame_tx.py` — Legacy JARDÍN (C11-based) EIP-8141 frame tx
-- `script/jardinero_frame_tx.py` — JARDÍN SPX EIP-8141 frame tx (ethrex)
-- `script/deploy_jardin_frame.py` — Deploys hand-optimized frame proxy (agnostic to which primary verifier lives in slot 0; flags: `--verifier` with legacy `--spx`/`--c11` aliases)
-- `script/DeployJardineroSepolia.s.sol` — Forge deploy script for SPX + FORS+C + factory
-- `signer-wasm/` — Rust WASM signer with BIP-39/44 key derivation
+Shared primitive library:
+- `script/jardin_primitives.py` — keccak256, 32-byte `make_adrs`, `th / th_pair / th_multi`, ADRS type constants. Imported by both active signers.
+
+Current signers + UserOp / frame-tx builders:
+- `script/jardin_spx_signer.py` — plain-SPHINCS+ (registration path)
+- `script/jardin_fors_plain_signer.py` — plain-FORS (compact path, variable h)
+- `script/jardin_spx_userop.py` — 4337 UserOp builder (SPX + plain-FORS via Candide)
+- `script/jardinero_frame_tx.py` — EIP-8141 frame tx builder (ethrex)
+- `script/deploy_jardin_frame.py` — Hand-optimized frame proxy deployer (`--verifier` flag with legacy `--spx`/`--c11` aliases)
+- `script/DeployJardineroSepolia.s.sol` — Forge deploy script for SPX + plain-FORS + factory
+- `signer-wasm/` — Rust WASM signer with BIP-39/44 key derivation (targets the current stack)
+
+Legacy signers / UserOp / frame-tx (`legacy/script/`): `signer.py`,
+`jardin_signer.py`, `jardin_t0_signer.py`, `jardin_userop.py`,
+`jardin_t0_userop.py`, `jardin_frame_tx.py`, etc. — see `legacy/README.md`.
 
 ### Key Derivation
 
