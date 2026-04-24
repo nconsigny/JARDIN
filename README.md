@@ -1,8 +1,8 @@
-# JARDÍN — Post-Quantum Hybrid Ethereum Accounts
+# JARDÍN - Post-Quantum Hybrid Ethereum Accounts
 
 ---
 
-> ## WARNING: RESEARCH PROTOTYPE — NOT FOR PRODUCTION USE
+> ## WARNING: RESEARCH PROTOTYPE - NOT FOR PRODUCTION USE
 >
 > Hybrid ECDSA + SPHINCs- accounts built on top of plain-SPHINCS+ (SPX) and
 > plain-FORS verifiers. **Not audited**, no security guarantees, do not use
@@ -12,12 +12,12 @@
 
 **JARDÍN** (Judicious Authentication from Random-subset Domain-separated Indexed Nodes) is a post-quantum smart-account design that combines:
 
-1. A **stateless registration path** — one plain-SPHINCS+ (SPX) signature per rotation event opens a "slot" (a sub-key commitment) on-chain.
-2. A **compact path** — each subsequent transaction uses a plain-FORS signature at constant ~60 K verify gas, against the sub-key authorised by the latest registration.
+1. A **stateless registration path** - one plain-SPHINCS+ (SPX) signature per rotation event opens a "slot" (a sub-key commitment) on-chain.
+2. A **compact path** - each subsequent transaction uses a plain-FORS signature at constant ~60 K verify gas, against the sub-key authorised by the latest registration.
 
 Both ERC-4337 (hybrid ECDSA + PQ, Sepolia) and EIP-8141 frame transactions (pure PQ, ethrex) are supported.
 
-The underlying SPHINCs-/SLH-DSA verifier research — C-series, SPX, SLH-DSA-SHA2-128-24, SLH-DSA-Keccak-128-24 — lives in a separate repo: [`nconsigny/SPHINCs-`](https://github.com/nconsigny/SPHINCs-). This repo focuses on the hybrid-account wiring (Jardin accounts, factories, frame accounts, UserOp / frame-tx senders).
+The underlying SPHINCs-/SLH-DSA verifier research - C-series, SPX, SLH-DSA-SHA2-128-24, SLH-DSA-Keccak-128-24 - lives in a separate repo: [`nconsigny/SPHINCs-`](https://github.com/nconsigny/SPHINCs-). This repo focuses on the hybrid-account wiring (Jardin accounts, factories, frame accounts, UserOp / frame-tx senders).
 
 ---
 
@@ -45,8 +45,8 @@ All three verifiers share one 32-byte JARDIN ADRS layout (`layer4‖tree8‖type
 
 | File | Purpose |
 |---|---|
-| `JardinSpxVerifier.sol` | Plain SPHINCS+ (SPX) verifier — h=20, d=5, a=7, k=20, w=8, l=45. 6,512-B sig, ~276 K verify |
-| `JardinForsPlainVerifier.sol` | Plain-FORS compact verifier — k=32, a=4, variable outer Merkle h ∈ [2,8]. ~60 K verify |
+| `JardinSpxVerifier.sol` | Plain SPHINCS+ (SPX) verifier - h=20, d=5, a=7, k=20, w=8, l=45. 6,512-B sig, ~276 K verify |
+| `JardinForsPlainVerifier.sol` | Plain-FORS compact verifier - k=32, a=4, variable outer Merkle h ∈ [2,8]. ~60 K verify |
 | `JardinAccount.sol` | ERC-4337 hybrid account: Type 1 (SPX + register), Type 2 (plain-FORS), Type 3 (optional C11 recovery via `attachC11Recovery`) |
 | `JardinAccountFactory.sol` | CREATE2 factory for `JardinAccount`. Wires SPX + plain-FORS as immutables |
 | `JardineroFrameAccount.sol` | EIP-8141 pure-PQ frame account. Keys embedded in bytecode via PUSH32 |
@@ -55,20 +55,20 @@ All three verifiers share one 32-byte JARDIN ADRS layout (`layer4‖tree8‖type
 
 Prior JARDIN variants, frozen for benchmark reproducibility:
 
-- `legacy/src/JardinForsCVerifier.sol` — FORS+C compact verifier with counter-grinding
-- `legacy/src/JardinT0Verifier.sol` — T0 (WOTS+C) registration-path variant
-- `legacy/src/JardinFrameAccount.sol` — earlier frame-account version
+- `legacy/src/JardinForsCVerifier.sol` - FORS+C compact verifier with counter-grinding
+- `legacy/src/JardinT0Verifier.sol` - T0 (WOTS+C) registration-path variant
+- `legacy/src/JardinFrameAccount.sol` - earlier frame-account version
 
 ## Off-chain
 
-- `script/jardin_primitives.py` — shared primitives (keccak256, 32-byte ADRS builder, tweakable hash helpers)
-- `script/jardin_spx_signer.py` — Python SPX signer (plain SPHINCS+)
-- `script/jardin_fors_plain_signer.py` — Python plain-FORS compact-path signer
-- `script/jardin_spx_userop.py` — ERC-4337 UserOp builder (SPX + plain-FORS via Candide bundler)
-- `script/jardinero_frame_tx.py` — EIP-8141 frame-tx builder for ethrex
-- `script/deploy_jardin_frame.py` — hand-optimised frame proxy deployer (`--verifier spx`/`c11` flag)
-- `script/frame_tx.py` — generic frame-tx sender
-- `signer-wasm/` — Rust/WASM signer with BIP-39/44 key derivation
+- `script/jardin_primitives.py` - shared primitives (keccak256, 32-byte ADRS builder, tweakable hash helpers)
+- `script/jardin_spx_signer.py` - Python SPX signer (plain SPHINCS+)
+- `script/jardin_fors_plain_signer.py` - Python plain-FORS compact-path signer
+- `script/jardin_spx_userop.py` - ERC-4337 UserOp builder (SPX + plain-FORS via Candide bundler)
+- `script/jardinero_frame_tx.py` - EIP-8141 frame-tx builder for ethrex
+- `script/deploy_jardin_frame.py` - hand-optimised frame proxy deployer (`--verifier spx`/`c11` flag)
+- `script/frame_tx.py` - generic frame-tx sender
+- `signer-wasm/` - Rust/WASM signer with BIP-39/44 key derivation
 
 ## Build and Test
 
