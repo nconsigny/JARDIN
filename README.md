@@ -12,8 +12,8 @@
 
 **JARDÍN** (Judicious Authentication from Random-subset Domain-separated Indexed Nodes) is a post-quantum smart-account design that combines:
 
-1. A **stateless registration path** - one plain-SPHINCS+ (SPX) signature per rotation event opens a "slot" (a sub-key commitment) on-chain.
-2. A **compact path** - each subsequent transaction uses a plain-FORS signature at constant ~60 K verify gas, against the sub-key authorised by the latest registration.
+1. A **stateless registration path** - one SPHINCS- signature per rotation event opens a "slot" (a sub-key commitment) on-chain.
+2. A **compact path** - each subsequent transaction uses a FORS signature at constant ~60 K verify gas, against the sub-key authorised by the latest registration.
 
 Both ERC-4337 (hybrid ECDSA + PQ, Sepolia) and EIP-8141 frame transactions (pure PQ, ethrex) are supported.
 
