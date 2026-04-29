@@ -44,21 +44,54 @@ All three verifiers share one 32-byte JARDIN ADRS layout (`layer4‖tree8‖type
 JARDIN combines two SPHINCs--family verifiers, each on its own lane:
 
 - **`JardinSpxVerifier.sol`** runs the **registration / fallback** path. Plain SPHINCS+ (SLH-DSA construction) with the JARDIN 32-byte ADRS kernel and keccak256 truncated to 16 B. This is the same contract as `SPHINCs-C12Asm.sol` in [`nconsigny/SPHINCs-`](https://github.com/nconsigny/SPHINCs-). One signature per slot rotation (or per emergency fallback).
-- **`JardinForsPlainVerifier.sol`** runs the **compact** path. Plain FORS with the same 32-byte ADRS kernel; few-time security per registered slot (Q_MAX = 2^h_outer signatures before the slot is exhausted). Constant verify gas regardless of `q`.
+- **`JardinForsPlainVerifier.sol`** runs the **compact** path. Plain FORS with the same 32-byte ADRS kernel; few-time per registered slot (Q_MAX = 2^h signatures before the slot is exhausted). Constant verify gas regardless of `q`.
 
-| Verifier | Family | role | h | d | a | k | w | l | Sig | sign_h | Verify | Frame | 4337 (Type 1 / Type 2) | sec |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| **JardinSpxVerifier** | plain SPHINCS+ / SLH-DSA | registration / fallback | 20 | 5 | 7 | 20 | 8 | 45 | 6,512 B | ~36.6 K keccak | ~276 – 278 K (compute); ~401 K on-chain (calldata floor 64 × 6,512 = 416,768 dominates) | - | **416 K** (Type 1: ECDSA + SPX + register, measured) | 128-bit at q ≤ 2¹¹; 127.8 at 2¹⁴ knee; flat through 2¹⁴; hypertree cap 2²⁰ |
-| **JardinForsPlainVerifier** | plain FORS (few-time) | compact tx | 2..8† | - | 4 | 32 | - | - | 2,625 B (h=2) … 2,657 B (h=4) … 2,721 B (h=8) — `2593 + 16·h` | per-slot keygen `2^h × ~k·2^(a+1) ≈ 2^h × 1,024` keccak (~16 K @ h=4 … ~262 K @ h=8); per-sig ≪1 K from a cached slot | **~60 K constant** (no WOTS chains; reveal climb is k·a + h = 128 + h H-calls) | ~95 K projected (~60 K verify + frame overhead) — not yet measured for plain-FORS | TBD — not yet measured for plain-FORS | k·a = 128-bit one-time; graceful: 105-bit at r=2 (double-sign), 74-bit at r=5; Q_MAX = 2^h per slot |
+The two paths have different security models, so they're documented in separate tables: SPX is a *stateless* signature with the standard hypertree security profile (degrades with total q), plain-FORS is a *few-time* signature whose security is bounded by the slot's hard cap and characterised by reuse multiplicity γ (not by lifetime q).
 
-† `h` is chosen per slot by the signer and is inferred at verify time from the signature length: `h = (sig.length − 2593) / 16` (revert unless `2 ≤ h ≤ 8` and `(sig.length − 2593) % 16 == 0`).
+### Plain SPX — stateless registration path
 
-- **Family**: `plain SPHINCS+ / SLH-DSA` is the standard FIPS 205 construction (no counter-grinding), instantiated here with keccak256 + JARDIN 32-byte ADRS instead of FIPS 205's SHA-256 + 22-byte compressed ADRSc. `plain FORS (few-time)` is the FORS sub-tree from SPHINCS+ used standalone as a few-time signature scheme; each slot is a balanced Merkle tree of 2^h independent FORS public keys, registered on-chain by one SPX signature.
-- **sign_h**: keccak calls per signing event. SPX is constant-cost per sig (cold signer; with a cached top-level XMSS tree it would drop to <1 K per sig). plain-FORS is dominated by per-slot keygen and then amortised over Q_MAX = 2^h compact signatures from the slot.
-- **Verify**: pure verifier compute (Foundry `gasleft()`). For SPX the on-chain tx cost is bounded below by the calldata floor of the 6,512-byte signature: `64 × 6,512 = 416,768` gas (or 16 × 6,512 = 104,192 with all-nonzero / EIP-7623 floor, whichever applies). For plain-FORS verify is essentially constant per `h` because the reveal climb is `k·a + h = 128 + h` H-calls regardless of which leaf in the slot is opened.
-- **Frame / 4337**: total tx gas (ethrex EIP-8141 / Sepolia ERC-4337 with `JardinAccount` + EntryPoint v0.9). **The Type 1 (SPX register) 4337 number is measured at 416 K. The Type 2 (plain-FORS compact) numbers are *not yet measured* against the current plain-FORS verifier — the 119 K / 176 K numbers in earlier drafts of this doc were FORS+C measurements and have been removed.**
+`h=20  d=5  a=7  k=20  w=8  l=45,  n=16,  no grinding.  Sig 6,512 B.`
 
-The compact lane is the value proposition: one expensive SPX registration (~416 K 4337 gas) opens a slot of `Q_MAX = 2^h` cheap signatures, then every subsequent in-slot tx pays only the plain-FORS verify (~60 K compute). A wallet rotating slots every 128 txs pays the SPX price < 1 % of the time. The SPX path is also always available as a stateless fallback when the compact slot state is lost.
+| Metric | Value | Source |
+|---|---|---|
+| sec_10 (≤ 2¹⁰ sigs/key) | 128 bit | `compute_security` model (SPHINCs- README) |
+| sec_14 (≤ 2¹⁴) | 127.8 bit | ″ (knee) |
+| sec_18 (≤ 2¹⁸) | 109.1 bit | ″ |
+| sec_20 (≤ 2²⁰, hard cap) | 95.4 bit | ″ |
+| Verify gas (pure assembly, `gasleft()`) | 276 K | Foundry test |
+| 4337 `handleOps` (Type 1: ECDSA + SPX + register slot) | **519,487** | [tx 0x6797bdcc...](https://sepolia.etherscan.io/tx/0x6797bdccff4c122c7d493e1de5725980a86c411163f26e5c07315ed44fb02c81) |
+| Sign keccak count (zero-memory) | 36.6 K (modelled); 31.5 K measured, 47.3 s on Ledger Nano S+ ST33K1M5 | repo / hardware test |
+
+The 519,487 gas Type 1 figure breaks down as: EntryPoint v0.9 baseline ~95 K + ECDSA recover ~5 K + SPX verify ~276 K + 16+16-byte slot SSTOREs ~44 K + 6,610-byte calldata ~80 K (16 gas/byte after EIP-7623 slack). Calldata dominates the cost floor because the signature is large.
+
+### Plain FORS — compact signing path
+
+`k=32  a=4  h ∈ [2, 7],  n=16.  Sig = 2,593 + 16·h B  (2,657 at h=4, 2,705 at h=7).`
+
+Few-time **per slot**, so `sec_N` (lifetime-q security) doesn't apply — the slot is bounded by 2^h signatures by construction; once exhausted the device generates a fresh `r` and the SPX path registers a new slot.
+
+| Metric | h=4 (Q=16) | h=7 (Q=128) | Notes |
+|---|---|---|---|
+| Slot capacity (max sigs) | 16 | 128 | hard cap; rotate to a fresh `r` |
+| Sig length | 2,657 B | 2,705 B | `2593 + 16·h` |
+| Verify gas (pure, est.) | ~60 K | ~60 K | k=32 trees × 5 keccak each + outer Merkle h × 1 keccak |
+| 4337 `handleOps` (Type 2: ECDSA + plain-FORS compact) | **173,142** | not yet measured | h=4: [tx 0x30f6dfbf...](https://sepolia.etherscan.io/tx/0x30f6dfbf6b25fb809e97efa725106c7a5d9208861a57c6e446b48530f61c5b6c) |
+| Sign keccak count | ~550 | ~550 | per signature, slot already cached |
+
+### FORS reuse profile (security as a function of γ = single-leaf reuses)
+
+For comparison across FORS parameter choices. γ is the number of times a single FORS instance gets re-signed (slot index hash collision under adversarial messages — anti-rollback should keep this at 1; γ=2 is the double-sign worst case if the device's burn-before-sign fails).
+
+| Variant | γ=1 | γ=2 | γ=3 | γ=5 | γ=10 | γ=20 |
+|---|---|---|---|---|---|---|
+| **k=32, a=4 (this repo's plain FORS)** | 128.0 | 97.5 | 80.2 | 59.4 | 34.3 | 14.9 |
+| k=26, a=5 | 130.0 | 104.6 | 90.0 | 72.0 | 48.8 | 27.5 |
+| k=22, a=6 | 132.0 | 110.2 | 97.6 | 81.9 | 61.1 | 38.4 |
+| k=14, a=12 (NIST FIPS 205-like) | 168.0 | 154.4 | 146.4 | 134.0 | 119.0 | 105.0 |
+
+Bigger trees (`a` up, `k` down) keep more security under reuse but make per-slot keygen and sign cost grow exponentially in `a`; the JARDIN choice of `k=32, a=4` minimises signer / device cost at the price of steeper γ-degradation. Across the full system, slot rotation independent per `r` keeps the system-level floor at ~116 bits even if a single slot is re-used once.
+
+The compact-path value proposition: one expensive SPX registration (~519 K 4337 gas) opens a slot of `Q_MAX = 2^h` cheap signatures at ~173 K each (h=4), then the device rotates to a fresh `r`. The SPX path is also always available as a stateless fallback when the compact slot state is lost.
 
 ## Contracts
 
