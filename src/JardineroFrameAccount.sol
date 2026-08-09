@@ -32,6 +32,20 @@ contract JardineroFrameAccount {
     error SlotAlreadyRegistered();
     error UnregisteredSlot();
     error NotSelf();
+    error NonCanonicalKey();
+
+    /// @dev PQ public-key components are 16-byte values stored top-aligned in a
+    ///      bytes32 (low 128 bits zero). The verifiers mask every recomputed root
+    ///      to the high 16 bytes, so a stored root with dirty low bits can only
+    ///      ever fail `eq(root, recomputed)` — a permanent, unrecoverable brick.
+    ///      Reject non-canonical keys at every commit point.
+    function _requireCanonical(bytes32 seed, bytes32 root) internal pure {
+        require(
+            uint256(seed) & type(uint128).max == 0 &&
+            uint256(root) & type(uint128).max == 0,
+            NonCanonicalKey()
+        );
+    }
 
     constructor(
         address _spxVerifier,
@@ -40,6 +54,7 @@ contract JardineroFrameAccount {
         bytes32 _spxPkRoot,
         address _owner
     ) {
+        _requireCanonical(_spxPkSeed, _spxPkRoot);
         spxVerifier = _spxVerifier;
         forsVerifier = _forsVerifier;
         spxPkSeed = _spxPkSeed;
@@ -51,6 +66,19 @@ contract JardineroFrameAccount {
     //  VERIFY frame entry: fallback receives sigHash(32) || sig(N)
     //  Pure read-only — no SSTOREs. Proxy emits APPROVE after.
     // ═══════════════════════════════════════════════════════════
+    //
+    //  KNOWN LIMITATION (tracked for the v2 introspection module, not fixed
+    //  here): `sigHash` is taken from the VERIFY frame calldata, and the PQ
+    //  signature authorizes only that digest. The canonical EIP-8141 sig hash
+    //  commits to frame *structure* (modes, targets, nonce) but NOT to SENDER
+    //  frame *data*, so the execute/registerSlot payload is unbound. A mempool
+    //  observer can keep sigHash and swap the SENDER data before the tx lands.
+    //  The msg.sender==address(this) guards below stop unauthenticated *direct*
+    //  calls; they do NOT stop this same-account data-substitution replay. The
+    //  real fix is to recompute the digest on-chain via TXPARAM(0x08) and bind
+    //  the SENDER frame via FRAMEPARAM/FRAMEDATACOPY — a Yul verbatim module
+    //  (solc cannot reach the 0xb0-0xb4 opcodes from inline assembly). Until
+    //  then, treat this account as trusted-relayer only.
 
     fallback(bytes calldata input) external returns (bytes memory) {
         require(input.length > 65, InvalidSignatureType());
@@ -97,13 +125,24 @@ contract JardineroFrameAccount {
     //  SENDER frame entries: state-modifying operations
     // ═══════════════════════════════════════════════════════════
 
+    /// @notice Register a compact-path sub-key slot.
+    /// @dev SENDER-frame only: in EIP-8141 SENDER mode the caller is `tx.sender`,
+    ///      which for a self-sending account is this contract. Without this guard
+    ///      any EOA could register its own sub-key and then pass the Type-2
+    ///      compact path, a complete PQ-auth bypass. Legitimate registration is
+    ///      gated by the preceding Type-1 VERIFY frame (master SPX signature).
     function registerSlot(bytes16 subSeed, bytes16 subRoot) external {
+        require(msg.sender == address(this), NotSelf());
         bytes32 key = keccak256(abi.encodePacked(subSeed, subRoot));
         require(slots[key] == 0, SlotAlreadyRegistered());
         slots[key] = 1;
     }
 
+    /// @notice Execute an arbitrary call on behalf of the account.
+    /// @dev SENDER-frame only (see registerSlot). Without this guard any EOA
+    ///      could drain the account directly, with no signature at all.
     function execute(address dest, uint256 value, bytes calldata data) external returns (bytes memory) {
+        require(msg.sender == address(this), NotSelf());
         (bool success, bytes memory result) = dest.call{value: value}(data);
         require(success, "exec failed");
         return result;
@@ -111,6 +150,7 @@ contract JardineroFrameAccount {
 
     function rotateSpxKeys(bytes32 newPkSeed, bytes32 newPkRoot) external {
         require(msg.sender == address(this), NotSelf());
+        _requireCanonical(newPkSeed, newPkRoot);
         spxPkSeed = newPkSeed;
         spxPkRoot = newPkRoot;
     }

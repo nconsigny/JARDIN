@@ -143,8 +143,9 @@ contract JardinSpxTest is Test {
             address(0xBEEF), cachedSeed, cachedRoot
         );
 
-        bytes32 newSeed = bytes32(uint256(0x1234));
-        bytes32 newRoot = bytes32(uint256(0x5678));
+        // Top-aligned 16-byte keys (low 128 bits zero) — canonical form.
+        bytes32 newSeed = bytes32(uint256(0x1234) << 128);
+        bytes32 newRoot = bytes32(uint256(0x5678) << 128);
         vm.prank(address(account));
         account.rotateSpxKeys(newSeed, newRoot);
         assertEq(account.spxPkSeed(), newSeed);

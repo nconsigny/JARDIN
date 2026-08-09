@@ -25,8 +25,10 @@ contract JardinAccount is BaseAccount {
     using ECDSA for bytes32;
 
     IEntryPoint private immutable _entryPoint;
-    address public immutable spxVerifier;
-    address public immutable forsVerifier;
+    // Mutable so a verifier bug can be corrected in place via rotateVerifiers
+    // (self-call gated) instead of forcing a redeploy to a new account address.
+    address public spxVerifier;
+    address public forsVerifier;
 
     address public owner;
     bytes32 public spxPkSeed;
@@ -46,6 +48,19 @@ contract JardinAccount is BaseAccount {
     error NotEntryPoint();
     error RecoveryAlreadySet();
     error RecoveryNotConfigured();
+    error NonCanonicalKey();
+
+    /// @dev 16-byte PQ key components must be stored top-aligned (low 128 bits
+    ///      zero); the verifiers mask recomputed roots to the high 16 bytes, so
+    ///      a non-canonical stored root can only ever fail and would permanently
+    ///      brick the account. Reject at every commit point.
+    function _requireCanonical(bytes32 seed, bytes32 root) internal pure {
+        require(
+            uint256(seed) & type(uint128).max == 0 &&
+            uint256(root) & type(uint128).max == 0,
+            NonCanonicalKey()
+        );
+    }
 
     constructor(
         IEntryPoint ep,
@@ -55,6 +70,7 @@ contract JardinAccount is BaseAccount {
         bytes32 _spxPkSeed,
         bytes32 _spxPkRoot
     ) {
+        _requireCanonical(_spxPkSeed, _spxPkRoot);
         _entryPoint = ep;
         owner = _owner;
         spxVerifier = _spxVerifier;
@@ -73,8 +89,18 @@ contract JardinAccount is BaseAccount {
 
     function rotateSpxKeys(bytes32 newPkSeed, bytes32 newPkRoot) external {
         require(msg.sender == address(this), NotEntryPoint());
+        _requireCanonical(newPkSeed, newPkRoot);
         spxPkSeed = newPkSeed;
         spxPkRoot = newPkRoot;
+    }
+
+    /// @notice Replace the verifier contracts (e.g. to ship a corrected
+    ///         verifier without redeploying the account). Self-call gated.
+    function rotateVerifiers(address newSpxVerifier, address newForsVerifier) external {
+        require(msg.sender == address(this), NotEntryPoint());
+        require(newSpxVerifier != address(0) && newForsVerifier != address(0));
+        spxVerifier = newSpxVerifier;
+        forsVerifier = newForsVerifier;
     }
 
     function rotateOwner(address newOwner) external {
@@ -90,6 +116,7 @@ contract JardinAccount is BaseAccount {
         require(msg.sender == address(this), NotEntryPoint());
         require(c11Verifier == address(0), RecoveryAlreadySet());
         require(verifier != address(0));
+        _requireCanonical(pkSeed, pkRoot);
         c11Verifier = verifier;
         c11PkSeed = pkSeed;
         c11PkRoot = pkRoot;
@@ -98,6 +125,7 @@ contract JardinAccount is BaseAccount {
     function rotateC11RecoveryKeys(bytes32 newPkSeed, bytes32 newPkRoot) external {
         require(msg.sender == address(this), NotEntryPoint());
         require(c11Verifier != address(0), RecoveryNotConfigured());
+        _requireCanonical(newPkSeed, newPkRoot);
         c11PkSeed = newPkSeed;
         c11PkRoot = newPkRoot;
     }
@@ -121,8 +149,12 @@ contract JardinAccount is BaseAccount {
         uint8 sigType = uint8(sig[0]);
 
         // ── ECDSA verification (required for all types) ──
-        address recovered = userOpHash.recover(sig[1:66]);
-        if (recovered != owner) {
+        // tryRecoverCalldata returns an error enum instead of reverting on a
+        // malformed signature (bad s-range / v), so a bad ECDSA sig yields a
+        // clean SIG_VALIDATION_FAILED rather than an AA23 bundle-level revert.
+        (address recovered, ECDSA.RecoverError ecdsaErr, ) =
+            ECDSA.tryRecoverCalldata(userOpHash, sig[1:66]);
+        if (ecdsaErr != ECDSA.RecoverError.NoError || recovered != owner) {
             return SIG_VALIDATION_FAILED;
         }
 
